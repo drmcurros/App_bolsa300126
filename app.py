@@ -8,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V12.2 (Fix Orden)", layout="wide") 
+st.set_page_config(page_title="Gestor V13.0 (Filtro Activas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -117,7 +117,7 @@ if data:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# 2. BARRA LATERAL (CONFIGURACIÓN) - ESTO DEBE IR ANTES DE LOS CÁLCULOS
+# 2. BARRA LATERAL (CONFIGURACIÓN)
 with st.sidebar:
     st.header("Configuración")
     mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
@@ -129,11 +129,15 @@ with st.sidebar:
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
         lista_años += list(años_disponibles)
-    # IMPORTANTE: Definimos la variable AQUÍ para que exista antes de usarla
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
+    
+    # --- NUEVO FILTRO AQUÍ ---
+    st.write("")
+    ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas (0 acciones)", value=False)
+    # -------------------------
+    
     st.divider()
 
-    # Botones de añadir operación
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
@@ -199,7 +203,7 @@ with st.sidebar:
                 st.session_state.pending_data = None
                 st.rerun()
 
-# 3. MOTOR DE CÁLCULO (AHORA SÍ FUNCIONA PORQUE YA EXISTE 'año_seleccionado')
+# 3. MOTOR DE CÁLCULO
 cartera_global = {}
 total_dividendos = 0.0 
 total_comisiones = 0.0
@@ -322,8 +326,6 @@ if st.session_state.ticker_detalle:
     m2.metric("Tus Acciones", f"{acciones_activas:,.4f}")
     m3.metric("Valor en Cartera", f"{valor_mercado_eur:,.2f} €", 
               delta=f"{rentabilidad_latente:+.2f}%" if acciones_activas > 0 else "0%")
-    # PnL en detalle mostramos el total de la acción, o el filtrado si prefieres. 
-    # Aquí muestra lo que se calculó en el bucle (que está filtrado por año si se seleccionó)
     m4.metric("Bº Realizado", f"{info.get('pnl_cerrado',0):,.2f} €", 
               delta="En periodo" if año_seleccionado != "Todos los años" else "Total")
 
@@ -352,7 +354,6 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # CAPA OPERACIONES
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -430,7 +431,19 @@ else:
 
     with st.spinner("Actualizando panel de acciones..."):
         for t, info in cartera_global.items():
-            if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
+            
+            # === LOGICA DE VISIBILIDAD DE FILAS ===
+            es_viva = info['acciones'] > 0.001
+            tuvo_actividad = abs(info['pnl_cerrado']) > 0.01
+            
+            mostrar = False
+            if ver_solo_activas: # Si el check está activado
+                mostrar = es_viva
+            else: # Si el check está desactivado (Ver todo)
+                mostrar = es_viva or tuvo_actividad
+            # ======================================
+
+            if mostrar:
                 saldo_vivo = info['coste_total_eur']
                 rentabilidad_pct = 0.0
                 precio_mercado_str = "0.00"
