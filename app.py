@@ -5,7 +5,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Cartera", layout="wide") 
+st.set_page_config(page_title="Gestor Cartera Pro", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -61,10 +61,10 @@ with st.sidebar:
         
         if st.form_submit_button("Guardar Operación"):
             if ticker and dinero_total > 0:
-                # --- CAMBIO AQUÍ: FORMATO LEGIBLE ---
-                # %Y = Año, %m = Mes, %d = Día, %H:%M = Hora:Minutos
-                fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
-                # ------------------------------------
+                # Guardamos fecha actual
+                # Nota: Aunque enviemos esto bonito, Airtable puede cambiarlo al guardar.
+                # La verdadera magia la haremos al LEER los datos abajo.
+                fecha_bonita = datetime.now().isoformat()
                 
                 nombre_final = ticker 
                 if desc_manual:
@@ -85,17 +85,28 @@ with st.sidebar:
                 }
                 try:
                     table.create(record)
-                    st.success(f"Guardado: {ticker} el {fecha_bonita}")
+                    st.success(f"Guardado correctamente: {ticker}")
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
 
-# --- CÁLCULOS ---
+# --- CÁLCULOS Y PROCESAMIENTO ---
 try: data = table.all()
 except: data = []
 
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
+    # === LIMPIEZA VISUAL DE FECHAS (NUEVO) ===
+    # Esto coge cualquier formato raro que mande Airtable y lo pone bonito
+    if 'Fecha' in df.columns:
+        # 1. Convertimos a fecha inteligente de Python
+        df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
+        # 2. Creamos el formato que te gusta: AAAA/MM/DD HH:MM
+        df['Fecha'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M')
+        # 3. Si alguna fecha falla (sale NaT), ponemos un texto vacío para que no rompa
+        df['Fecha'] = df['Fecha'].fillna("")
+    # =========================================
+
     for col in ["Cantidad", "Precio", "Comision"]:
         df[col] = df.get(col, 0.0)
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -176,6 +187,8 @@ if data:
     with st.expander("Historial"):
         if not df.empty:
             cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio'] if c in df.columns]
+            # Mostramos la tabla. Como ya hemos arreglado la columna 'Fecha' arriba,
+            # aquí saldrá perfecta automáticamente.
             st.dataframe(
                 df[cols].sort_values(by="Fecha", ascending=False), 
                 use_container_width=True
