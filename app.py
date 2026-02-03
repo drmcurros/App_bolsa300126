@@ -4,9 +4,10 @@ import yfinance as yf
 import requests
 from pyairtable import Api
 from datetime import datetime
+from zoneinfo import ZoneInfo # IMPORTANTE: Para manejar zonas horarias
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V6.2 (Fecha Auto)", layout="wide") 
+st.set_page_config(page_title="Gestor V6.3 (Zona Horaria)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO (SESSION STATE) ---
@@ -14,7 +15,6 @@ if "pending_data" not in st.session_state:
     st.session_state.pending_data = None
 if "adding_mode" not in st.session_state:
     st.session_state.adding_mode = False
-# NUEVO: Semilla para forzar el reseteo de los widgets de fecha
 if "reset_seed" not in st.session_state:
     st.session_state.reset_seed = 0
 
@@ -69,7 +69,7 @@ def guardar_en_airtable(record):
         table.create(record)
         st.success(f"✅ Guardado: {record['Ticker']}")
         st.session_state.pending_data = None
-        st.session_state.adding_mode = False # Cerramos formulario
+        st.session_state.adding_mode = False 
         st.rerun()
     except Exception as e: st.error(f"Error: {e}")
 
@@ -99,6 +99,15 @@ if data:
 # --- BARRA LATERAL ---
 with st.sidebar:
     
+    st.header("Configuración")
+    
+    # 1. SELECTOR DE ZONA HORARIA (NUEVO)
+    # Por defecto 'Atlantic/Canary'. Cámbialo a 'Europe/Madrid' si prefieres península.
+    mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
+    mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=0)
+    
+    st.divider()
+    
     st.header("Filtros")
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
@@ -107,15 +116,12 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     st.divider()
 
-    # Botón Principal (Apertura de formulario)
+    # Botón Principal
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
-            # --- TRUCO CLAVE ---
-            # Actualizamos la semilla con el segundo actual.
-            # Esto obliga a los widgets de fecha a reiniciarse.
+            # Forzamos reseteo de hora con la semilla
             st.session_state.reset_seed = int(datetime.now().timestamp())
-            # -------------------
             st.rerun()
 
     # Formulario
@@ -141,14 +147,16 @@ with st.sidebar:
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 
                 st.markdown("---")
-                st.write("📆 **Fecha:**")
-                cd, ct = st.columns(2)
+                st.write(f"📆 **Fecha ({mi_zona}):**")
                 
-                # --- WIDGETS CON SEMILLA DINÁMICA ---
-                # Al añadir key=..., si reset_seed cambia, el widget se crea de cero con el value=NOW
-                f_in = cd.date_input("Día", value=datetime.now(), key=f"d_{st.session_state.reset_seed}")
-                h_in = ct.time_input("Hora", value=datetime.now(), key=f"t_{st.session_state.reset_seed}")
-                # ------------------------------------
+                # --- HORA LOCAL CORREGIDA ---
+                # Obtenemos la hora actual en TU zona horaria, no la del servidor
+                ahora_local = datetime.now(ZoneInfo(mi_zona))
+                
+                cd, ct = st.columns(2)
+                f_in = cd.date_input("Día", value=ahora_local, key=f"d_{st.session_state.reset_seed}")
+                h_in = ct.time_input("Hora", value=ahora_local, key=f"t_{st.session_state.reset_seed}")
+                # ----------------------------
                 
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
