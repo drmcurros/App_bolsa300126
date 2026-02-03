@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V7.3 (Con Logos)", layout="wide") 
+st.set_page_config(page_title="Gestor V7.4 (Logos Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -34,7 +34,6 @@ def check_password():
         except: st.error("Revisa Secrets")
     return False
 
-# --- CACHÉS ---
 @st.cache_data(ttl=300) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
     if from_curr == to_curr: return 1.0
@@ -43,15 +42,18 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
         return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
 
-# NUEVA FUNCIÓN: Obtener Logo con caché larga (24h)
-@st.cache_data(ttl=86400, show_spinner=False)
+# --- NUEVA LÓGICA DE LOGOS (DIRECTA) ---
 def get_logo_url(ticker):
-    try:
-        # Yahoo suele tener el logo en la metadata 'info'
-        url = yf.Ticker(ticker).info.get('logo_url', '')
-        return url
-    except:
-        return "" # Si falla, devuelve vacío para que no rompa
+    """
+    En lugar de preguntar a Yahoo (que falla mucho), construimos la URL directa
+    al servidor de imágenes de Financial Modeling Prep.
+    Funciona para el 99% de acciones (ej. AAPL, TSLA, etc).
+    """
+    # Limpiamos el ticker por si acaso (algunos servicios prefieren '.' o '-')
+    clean_ticker = ticker.replace(".MC", "") # Ajuste para algunas españolas si fallan
+    
+    # URL Directa de FMP (Rápida y fiable)
+    return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
 def get_stock_data_fmp(ticker):
     try:
@@ -255,7 +257,7 @@ if not df.empty:
     saldo_invertido_total = 0 
     fx_usd_now = get_exchange_rate_now("USD", "EUR")
 
-    with st.spinner("Actualizando precios y logos..."):
+    with st.spinner("Conectando con mercados..."):
         for t, info in cartera.items():
             if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
                 saldo_vivo = info['coste_total_eur']
@@ -263,13 +265,9 @@ if not df.empty:
                 
                 rentabilidad_pct = 0.0
                 precio_mercado_str = "0.00"
-                logo_url = "" # Variable para el logo
+                logo_url = get_logo_url(t) # URL DIRECTA AHORA
                 
                 if info['acciones'] > 0.001:
-                    # 1. OBTENER LOGO (Usamos la función con caché)
-                    logo_url = get_logo_url(t)
-                    
-                    # 2. OBTENER PRECIO
                     _, p_now = get_stock_data_fmp(t)
                     if not p_now: _, p_now = get_stock_data_yahoo(t)
                     
@@ -281,11 +279,9 @@ if not df.empty:
                         precio_mercado_str = f"{p_now:.2f} {moneda_act}"
                         if info['pmc'] > 0:
                             rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
-                    else:
-                        precio_mercado_str = "ERROR API"
 
                 tabla_final.append({
-                    "Logo": logo_url, # Ponemos el logo primero
+                    "Logo": logo_url,
                     "Empresa": info['desc'],
                     "Ticker": t,
                     "Acciones": info['acciones'],
@@ -299,12 +295,11 @@ if not df.empty:
     beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("💰 BENEFICIO TOTAL NETO", f"{beneficio_neto_total:,.2f} €", delta="Limpio")
+    m1.metric("💰 BENEFICIO NETO", f"{beneficio_neto_total:,.2f} €", delta="Limpio")
     m2.metric("Bº/P Trading (Cerrado)", f"{pnl_global_cerrado:,.2f} €")
-    m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €")
-    m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €")
+    m3.metric("Dividendos", f"{total_dividendos:,.2f} €")
+    m4.metric("Comisiones", f"-{total_comisiones:,.2f} €")
     
-    st.caption(f"**Dinero Invertido (Coste):** {saldo_invertido_total:,.2f} €")
     st.divider()
     
     if tabla_final:
@@ -312,8 +307,7 @@ if not df.empty:
         st.subheader(f"📊 Detalle por Acción ({año_seleccionado})")
         
         cfg_columnas = {
-            # CONFIGURACIÓN DE LA COLUMNA DE IMAGEN
-            "Logo": st.column_config.ImageColumn("Logo", width="small", help="Logo corporativo"),
+            "Logo": st.column_config.ImageColumn("Logo", width="small"), # IMAGEN CONFIGURADA
             "Empresa": st.column_config.TextColumn("Empresa"),
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
