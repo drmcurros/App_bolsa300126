@@ -4,13 +4,13 @@ import yfinance as yf
 import requests
 from pyairtable import Api
 from datetime import datetime
-from zoneinfo import ZoneInfo # IMPORTANTE: Para manejar zonas horarias
+from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V6.3 (Zona Horaria)", layout="wide") 
+st.set_page_config(page_title="Gestor V7.0 (Rentabilidad %)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
-# --- ESTADO (SESSION STATE) ---
+# --- ESTADO ---
 if "pending_data" not in st.session_state:
     st.session_state.pending_data = None
 if "adding_mode" not in st.session_state:
@@ -34,7 +34,9 @@ def check_password():
         except: st.error("Revisa Secrets")
     return False
 
-def get_exchange_rate(from_curr, to_curr="EUR"):
+# Cacheamos el cambio de divisa para que no tarde mucho si tienes muchas acciones
+@st.cache_data(ttl=300) # Se actualiza cada 5 minutos
+def get_exchange_rate_now(from_curr, to_curr="EUR"):
     if from_curr == to_curr: return 1.0
     try:
         pair = f"{to_curr}=X" if from_curr == "USD" else f"{from_curr}{to_curr}=X"
@@ -98,14 +100,9 @@ if data:
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    
     st.header("Configuración")
-    
-    # 1. SELECTOR DE ZONA HORARIA (NUEVO)
-    # Por defecto 'Atlantic/Canary'. Cámbialo a 'Europe/Madrid' si prefieres península.
     mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
     mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=0)
-    
     st.divider()
     
     st.header("Filtros")
@@ -116,19 +113,14 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     st.divider()
 
-    # Botón Principal
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
-            # Forzamos reseteo de hora con la semilla
             st.session_state.reset_seed = int(datetime.now().timestamp())
             st.rerun()
 
-    # Formulario
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
-        
         st.markdown("### 📝 Datos de la Operación")
-        
         if st.button("❌ Cerrar Formulario", use_container_width=True):
             st.session_state.adding_mode = False
             st.session_state.pending_data = None
@@ -148,15 +140,11 @@ with st.sidebar:
                 
                 st.markdown("---")
                 st.write(f"📆 **Fecha ({mi_zona}):**")
-                
-                # --- HORA LOCAL CORREGIDA ---
-                # Obtenemos la hora actual en TU zona horaria, no la del servidor
                 ahora_local = datetime.now(ZoneInfo(mi_zona))
                 
                 cd, ct = st.columns(2)
                 f_in = cd.date_input("Día", value=ahora_local, key=f"d_{st.session_state.reset_seed}")
                 h_in = ct.time_input("Hora", value=ahora_local, key=f"t_{st.session_state.reset_seed}")
-                # ----------------------------
                 
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
@@ -207,12 +195,13 @@ if not df.empty:
     total_comisiones = 0.0
     pnl_global_cerrado = 0.0 
 
-    fx_cache = {}
-    def get_fx(mon):
-        if mon == MONEDA_BASE: return 1.0
-        if mon not in fx_cache: fx_cache[mon] = get_exchange_rate(mon, MONEDA_BASE)
-        return fx_cache[mon]
+    # Función para obtener FX histórico (para el cálculo de coste)
+    def get_fx_hist(row):
+        # Aquí simplificamos usando el actual, pero idealmente sería el histórico.
+        # Para V7 usamos el actual cacheado para todo el bucle por eficiencia.
+        return get_exchange_rate_now(row.get('Moneda', 'EUR'), MONEDA_BASE)
 
+    # --- MOTOR DE CÁLCULO ---
     for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
         tipo = row.get('Tipo')
         tick = str(row.get('Ticker', '')).strip()
@@ -223,13 +212,18 @@ if not df.empty:
         mon = row.get('Moneda', 'EUR')
         comi = float(row.get('Comision', 0))
         
-        fx = get_fx(mon)
+        # Obtenemos cambio (Simulado a hoy para simplificar V7, o usar histórico si estuviera)
+        fx = get_exchange_rate_now(mon, MONEDA_BASE)
+        
         dinero_eur = dinero * fx
         acciones_op = dinero / precio 
         total_comisiones += (comi * fx)
 
         if tick not in cartera:
-            cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 'pnl_cerrado': 0.0, 'pmc': 0.0}
+            cartera[tick] = {
+                'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 
+                'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon
+            }
 
         if tipo == "Compra":
             cartera[tick]['acciones'] += acciones_op
@@ -250,27 +244,59 @@ if not df.empty:
         elif tipo == "Dividendo":
             total_dividendos += dinero_eur
 
-    # --- TABLA Y VISUALIZACIÓN ---
+    # --- TABLA Y VALORACIÓN ONLINE ---
     tabla_final = []
     saldo_invertido_total = 0 
+    
+    # Obtenemos cambio actual USD->EUR una sola vez para la valoración
+    fx_usd_now = get_exchange_rate_now("USD", "EUR")
 
-    for t, info in cartera.items():
-        if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
-            saldo_vivo = info['coste_total_eur']
-            saldo_invertido_total += saldo_vivo
+    with st.spinner("Conectando con mercados para valorar cartera actual..."):
+        for t, info in cartera.items():
             
-            tabla_final.append({
-                "Empresa": info['desc'],
-                "Ticker": t,
-                "Acciones": info['acciones'],
-                "PMC": info['pmc'] / get_fx(df_filtrado[df_filtrado['Ticker']==t]['Moneda'].iloc[-1]),
-                "Saldo Invertido": saldo_vivo,
-                "Bº/P (Cerrado)": info['pnl_cerrado']
-            })
+            # Solo procesamos si hay historial relevante
+            if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
+                saldo_vivo = info['coste_total_eur']
+                saldo_invertido_total += saldo_vivo
+                
+                # --- CÁLCULO DE % LATENTE (NUEVO) ---
+                rentabilidad_pct = 0.0
+                precio_actual_eur = 0.0
+                
+                # Solo buscamos precio si tenemos acciones vivas
+                if info['acciones'] > 0.001:
+                    try:
+                        # 1. Buscamos precio online (en divisa origen)
+                        _, p_now = get_stock_data_fmp(t)
+                        if not p_now: _, p_now = get_stock_data_yahoo(t)
+                        
+                        if p_now:
+                            # 2. Convertimos precio actual a EUR
+                            moneda_act = info['moneda_origen']
+                            fx_act = 1.0
+                            if moneda_act == "USD": fx_act = fx_usd_now
+                            
+                            precio_actual_eur = p_now * fx_act
+                            
+                            # 3. Fórmula Rentabilidad: (Precio Actual - PMC) / PMC
+                            if info['pmc'] > 0:
+                                rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc']) # Decimal (0.10 = 10%)
+                    except: pass
+                # ------------------------------------
+
+                tabla_final.append({
+                    "Empresa": info['desc'],
+                    "Ticker": t,
+                    "Acciones": info['acciones'],
+                    "PMC": info['pmc'], # Ya está en EUR
+                    "Saldo Invertido": saldo_vivo,
+                    "Bº/P (Cerrado)": info['pnl_cerrado'],
+                    "% Actual": rentabilidad_pct # Nuevo campo
+                })
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Dinero en Juego", f"{saldo_invertido_total:,.2f} €", help="Coste de acciones que aún tienes")
-    c2.metric("Bº/Pérdida Realizado", f"{pnl_global_cerrado:,.2f} €", delta="Ganancia Neta" if pnl_global_cerrado > 0 else "Pérdida Neta")
+    c1.metric("Dinero Invertido (Coste)", f"{saldo_invertido_total:,.2f} €", help="Dinero desembolsado en acciones vivas")
+    c2.metric("Bº/P Realizado (Ya en bolsillo)", f"{pnl_global_cerrado:,.2f} €", delta="Cerrado")
     c3.metric("Dividendos", f"{total_dividendos:,.2f} €")
     c4.metric("Comisiones", f"{total_comisiones:,.2f} €")
     
@@ -281,19 +307,29 @@ if not df.empty:
         st.subheader(f"📊 Rentabilidad {año_seleccionado}")
         
         cfg_columnas = {
-            "Empresa": st.column_config.TextColumn("Empresa", help="Nombre comercial."),
-            "Ticker": st.column_config.TextColumn("Ticker", help="Símbolo bursátil."),
-            "Acciones": st.column_config.NumberColumn("Acciones", help="Títulos en posesión.", format="%.4f"),
-            "PMC": st.column_config.NumberColumn("PMC (Medio)", help="Precio Medio de Compra.", format="%.2f"),
-            "Saldo Invertido": st.column_config.NumberColumn("Saldo Invertido (€)", help="Coste base remanente.", format="%.2f €"),
-            "Bº/P (Cerrado)": st.column_config.NumberColumn("Bº/P (Cerrado)", help="Beneficio/Pérdida de ventas ya cerradas.", format="%.2f €"),
+            "Empresa": st.column_config.TextColumn("Empresa"),
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
+            "PMC": st.column_config.NumberColumn("PMC (Medio)", help="Tu coste medio en €", format="%.2f €"),
+            "Saldo Invertido": st.column_config.NumberColumn("Invertido (€)", help="Coste total vivo", format="%.2f €"),
+            "Bº/P (Cerrado)": st.column_config.NumberColumn("Bº/P (Cerrado)", help="Ganancia de ventas pasadas", format="%.2f €"),
+            # NUEVA COLUMNA CON BARRA Y COLOR
+            "% Actual": st.column_config.NumberColumn(
+                "% Latente",
+                help="Rentabilidad si vendieras AHORA mismo (Precio Actual vs PMC)",
+                format="%.2f %%"
+            )
         }
 
+        # Estilo para Bº Cerrado (Texto) y % Actual (Texto también, para no sobrecargar)
+        # Podríamos usar ProgressColumn para % Actual, pero el color rojo/verde es más claro en finanzas.
+        def color_rentabilidad(val):
+            color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
+            return f'color: {color}; font-weight: bold;'
+
         st.dataframe(
-            df_show.style.map(
-                lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
-                subset=['Bº/P (Cerrado)']
-            ),
+            df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Actual'])
+                         .format({'% Actual': "{:.2%}"}), # Formato porcentaje visual pandas
             column_config=cfg_columnas,
             use_container_width=True, 
             hide_index=True
