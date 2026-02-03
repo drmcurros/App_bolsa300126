@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import requests
 from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Cartera Validada", layout="wide") 
+st.set_page_config(page_title="Gestor API Pro", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -28,87 +29,112 @@ def get_exchange_rate(from_curr, to_curr="EUR"):
     if from_curr == to_curr: return 1.0
     try:
         pair = f"{to_curr}=X" if from_curr == "USD" else f"{from_curr}{to_curr}=X"
-        hist = yf.Ticker(pair).history(period="1d")
-        return hist['Close'].iloc[-1] if not hist.empty else 1.0
+        return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
+
+def get_stock_data_fmp(ticker):
+    """
+    Conecta con la API oficial de Financial Modeling Prep.
+    Devuelve: (Nombre, Precio) o (None, None) si falla.
+    """
+    try:
+        api_key = st.secrets["fmp"]["api_key"]
+        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        if data and len(data) > 0:
+            nombre = data[0].get('companyName')
+            precio = data[0].get('price')
+            return nombre, precio
+        return None, None
+    except Exception as e:
+        return None, None
 
 # --- APP ---
 if not check_password(): st.stop()
 
-# Conexión Airtable
 try:
     api = Api(st.secrets["airtable"]["api_token"])
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera")
+st.title("💼 Mi Cartera (Motor FMP)")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.header("Registrar Movimiento")
     with st.form("trade_form"):
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
-        ticker = st.text_input("Ticker (ej. AAPL)").upper().strip() # .strip() quita espacios accidentales
+        ticker = st.text_input("Ticker (ej. AAPL)").upper().strip()
         
-        desc_manual = st.text_input("Descripción (Opcional)", help="Si lo dejas vacío, se buscará en internet.")
-        
+        desc_manual = st.text_input("Descripción (Opcional)", help="Escribe aquí si quieres forzar un nombre.")
         moneda = st.selectbox("Moneda", ["EUR", "USD"])
         
         col_dinero, col_precio = st.columns(2)
-        dinero_total = col_dinero.number_input("Importe Total (Dinero)", min_value=0.0, step=10.0)
-        precio_accion = col_precio.number_input("Precio Cotización", min_value=0.0, format="%.2f")
+        dinero_total = col_dinero.number_input("Importe Total", min_value=0.0, step=10.0)
+        
+        # El precio lo intentaremos autocompletar, pero dejamos que lo edites
+        precio_manual = col_precio.number_input("Precio (Opcional si buscas)", min_value=0.0, format="%.2f", help="Si pones 0, intentaré coger el precio real.")
         comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
         
-        if st.form_submit_button("Guardar Operación"):
+        # Botón de búsqueda previa (para ver si existe sin guardar)
+        check_btn = st.form_submit_button("🔍 Verificar y Guardar")
+
+        if check_btn:
             if ticker and dinero_total > 0:
                 
-                # === VALIDACIÓN ESTRICTA (EL PORTERO) ===
+                # 1. VERIFICACIÓN ROBUSTA CON API OFICIAL
+                nombre_api = None
+                precio_api = 0.0
                 es_valido = False
-                nombre_encontrado = None
                 
-                with st.spinner(f"Verificando si '{ticker}' existe en bolsa..."):
-                    try:
-                        stock = yf.Ticker(ticker)
-                        # Pedimos historial de 5 días por si es fin de semana
-                        hist = stock.history(period="5d")
-                        
-                        if not hist.empty:
-                            es_valido = True
-                            # Ya que estamos, intentamos coger el nombre
-                            info = stock.info
-                            nombre_encontrado = info.get('longName') or info.get('shortName')
-                        else:
-                            es_valido = False
-                    except Exception:
-                        es_valido = False
-                
-                # Si el portero dice NO, paramos todo aquí.
-                if not es_valido:
-                    st.error(f"❌ ERROR CRÍTICO: El Ticker '{ticker}' no existe en Yahoo Finance o está mal escrito. Revisa la ortografía (ej. ¿es GOOG o GOOGL?).")
-                    st.stop() # Detiene la ejecución, no guarda nada.
-                # ========================================
+                with st.spinner(f"Consultando base de datos oficial para {ticker}..."):
+                    nombre_api, precio_api = get_stock_data_fmp(ticker)
+                    
+                    if nombre_api:
+                        es_valido = True
+                    else:
+                        # Plan B: Yahoo (por si FMP falla o se acaban los créditos)
+                        try:
+                            info = yf.Ticker(ticker).info
+                            # Si Yahoo devuelve algo con sentido, lo damos por bueno
+                            if 'regularMarketPrice' in info or 'currentPrice' in info:
+                                es_valido = True
+                                nombre_api = info.get('longName', ticker)
+                                precio_api = info.get('currentPrice', 0)
+                        except: pass
 
-                # Si llegamos aquí, es que el Ticker es bueno. Procedemos.
-                fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
+                # 2. DECISIÓN DEL PORTERO
+                if not es_valido and not desc_manual:
+                    st.error(f"❌ Error: El ticker '{ticker}' no existe en la base de datos oficial. Verifica que esté bien escrito.")
+                    st.stop()
                 
-                # Definimos el nombre final
-                nombre_final = ticker
-                if desc_manual:
-                    nombre_final = desc_manual # Manda el usuario
-                elif nombre_encontrado:
-                    nombre_final = nombre_encontrado # Manda internet
+                # 3. PREPARAR DATOS
+                # Nombre: Manual > API > Ticker
+                nombre_final = desc_manual if desc_manual else (nombre_api if nombre_api else ticker)
+                
+                # Precio: Manual > API > 0
+                precio_final = precio_manual if precio_manual > 0 else (precio_api if precio_api else 0)
+                
+                if precio_final == 0:
+                    st.warning("⚠️ No se encontró precio online. Por favor introduce el precio manualmente.")
+                    st.stop()
+
+                fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
                 
                 record = {
                     "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
                     "Moneda": moneda, "Cantidad": float(dinero_total),
-                    "Precio": float(precio_accion), "Comision": float(comision),
+                    "Precio": float(precio_final), "Comision": float(comision),
                     "Fecha": fecha_bonita
                 }
+                
                 try:
                     table.create(record)
-                    st.success(f"✅ Guardado correctamente: {nombre_final} ({ticker})")
+                    st.success(f"✅ Guardado: {nombre_final} a {precio_final} {moneda}")
                     st.rerun()
-                except Exception as e: st.error(f"Error guardando en Airtable: {e}")
+                except Exception as e: st.error(f"Error Airtable: {e}")
 
 # --- CÁLCULOS ---
 try: data = table.all()
@@ -117,7 +143,6 @@ except: data = []
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # Limpieza visual de fechas
     if 'Fecha' in df.columns:
         df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
         df['Fecha'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M')
@@ -133,8 +158,8 @@ if data:
     
     for i, row in df.iterrows():
         tipo = row.get('Tipo')
-        
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
+        
         raw_desc = row.get('Descripcion')
         if pd.isna(raw_desc) or raw_desc is None: desc = tick
         else:
@@ -144,7 +169,6 @@ if data:
         dinero = float(row.get('Cantidad', 0))
         precio = float(row.get('Precio', 1))
         if precio == 0: precio = 1 
-        
         comi = float(row.get('Comision', 0))
         moneda = row.get('Moneda', 'EUR')
         
@@ -153,19 +177,13 @@ if data:
         total_comis_eur += (comi * fx)
         
         if tipo == "Compra":
-            if tick not in cartera:
-                cartera[tick] = {'acciones': 0, 'desc': desc, 'moneda': moneda}
-            
+            if tick not in cartera: cartera[tick] = {'acciones': 0, 'desc': desc, 'moneda': moneda}
             cartera[tick]['acciones'] += num_acciones
-            
-            if len(str(desc)) > len(str(cartera[tick]['desc'])): 
-                cartera[tick]['desc'] = str(desc)
-            
+            if len(str(desc)) > len(str(cartera[tick]['desc'])): cartera[tick]['desc'] = str(desc)
         elif tipo == "Venta":
             if tick in cartera:
                 cartera[tick]['acciones'] -= num_acciones
                 if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
-                
         elif tipo == "Dividendo":
             total_divis_eur += (dinero * fx)
 
@@ -173,12 +191,20 @@ if data:
     val_total = 0
     tabla = []
     
-    with st.spinner("Actualizando precios..."):
+    with st.spinner("Valorando cartera (FMP + Yahoo)..."):
         for t, info in cartera.items():
             acc = info['acciones']
             if acc > 0.001:
-                try:
-                    p_now = yf.Ticker(t).history(period="1d")['Close'].iloc[-1]
+                # Intentamos obtener precio actual
+                # 1. Probamos FMP (más rápido y fiable)
+                _, p_now = get_stock_data_fmp(t)
+                
+                # 2. Si falla FMP, probamos Yahoo
+                if not p_now:
+                    try: p_now = yf.Ticker(t).history(period="1d")['Close'].iloc[-1]
+                    except: pass
+                
+                if p_now:
                     mon = info['moneda']
                     fx = get_exchange_rate(mon, MONEDA_BASE)
                     val = acc * p_now * fx
@@ -188,7 +214,6 @@ if data:
                         "Acciones": f"{acc:.4f}", "Precio": f"{p_now:.2f} {mon}",
                         "Valor (€)": val
                     })
-                except: pass
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Cartera", f"{val_total:,.2f} €")
@@ -203,10 +228,7 @@ if data:
     with st.expander("Historial"):
         if not df.empty:
             cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio'] if c in df.columns]
-            st.dataframe(
-                df[cols].sort_values(by="Fecha", ascending=False), 
-                use_container_width=True
-            )
+            st.dataframe(df[cols].sort_values(by="Fecha", ascending=False), use_container_width=True)
 
 else:
     st.info("Sin datos.")
