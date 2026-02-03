@@ -6,10 +6,10 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor con Confirmación", layout="wide") 
+st.set_page_config(page_title="Gestor Histórico", layout="wide") 
 MONEDA_BASE = "EUR" 
 
-# --- INICIALIZAR ESTADO (MEMORIA TEMPORAL) ---
+# --- INICIALIZAR ESTADO ---
 if "pending_data" not in st.session_state:
     st.session_state.pending_data = None
 
@@ -30,6 +30,10 @@ def check_password():
     return False
 
 def get_exchange_rate(from_curr, to_curr="EUR"):
+    """
+    Necesitamos el cambio de divisa SOLO para convertir los dólares 
+    que metes/sacas a Euros y sumarlos bien.
+    """
     if from_curr == to_curr: return 1.0
     try:
         pair = f"{to_curr}=X" if from_curr == "USD" else f"{from_curr}{to_curr}=X"
@@ -59,39 +63,35 @@ def get_stock_data_yahoo(ticker):
     except: return None, None
 
 def guardar_en_airtable(record):
-    """Función auxiliar para guardar y limpiar estado"""
     try:
-        # Recuperamos conexión aquí para asegurar que está activa
         api = Api(st.secrets["airtable"]["api_token"])
         table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
         table.create(record)
-        st.success(f"✅ Operación Guardada: {record['Ticker']}")
-        st.session_state.pending_data = None # Limpiamos memoria
+        st.success(f"✅ Guardado: {record['Ticker']}")
+        st.session_state.pending_data = None
         st.rerun()
     except Exception as e:
         st.error(f"Error Airtable: {e}")
 
-# --- APP PRINCIPAL ---
+# --- APP ---
 if not check_password(): st.stop()
 
-# Conexión Airtable (Solo para lectura inicial)
 try:
     api = Api(st.secrets["airtable"]["api_token"])
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera")
+st.title("💼 Mi Cartera (Saldo Invertido)")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.header("Registrar Movimiento")
     
-    # Si NO hay nada pendiente de confirmar, mostramos el formulario normal
     if st.session_state.pending_data is None:
         with st.form("trade_form"):
             tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
             ticker = st.text_input("Ticker (ej. AAPL)").upper().strip()
-            desc_manual = st.text_input("Descripción (Opcional)", help="Fuerza un nombre si quieres.")
+            desc_manual = st.text_input("Descripción (Opcional)")
             moneda = st.selectbox("Moneda", ["EUR", "USD"])
             
             col_dinero, col_precio = st.columns(2)
@@ -103,58 +103,43 @@ with st.sidebar:
 
             if submitted:
                 if ticker and dinero_total > 0:
-                    # 1. VERIFICACIÓN DOBLE
                     nombre_final = None
                     precio_final = 0.0
                     
-                    with st.spinner("Verificando..."):
-                        # Intento A: FMP
+                    with st.spinner("Verificando existencia..."):
                         nombre_final, precio_final = get_stock_data_fmp(ticker)
-                        # Intento B: Yahoo
                         if not nombre_final:
                             nombre_final, precio_final = get_stock_data_yahoo(ticker)
                     
-                    # PREPARAR DATOS
                     if desc_manual: nombre_final = desc_manual
-                    if not nombre_final: nombre_final = ticker # Si no existe, usamos el ticker
+                    if not nombre_final: nombre_final = ticker
                     
                     if precio_manual > 0: precio_final = precio_manual
                     if not precio_final: precio_final = 0.0
 
                     fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
                     
-                    datos_registro = {
+                    datos = {
                         "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
                         "Moneda": moneda, "Cantidad": float(dinero_total),
                         "Precio": float(precio_final), "Comision": float(comision),
                         "Fecha": fecha_bonita
                     }
 
-                    # --- EL JUEZ ---
-                    # Si encontramos datos válidos (nombre o precio > 0), guardamos directo
                     if precio_final > 0:
-                        guardar_en_airtable(datos_registro)
+                        guardar_en_airtable(datos)
                     else:
-                        # Si NO encontramos nada fiable, activamos MODO CONFIRMACIÓN
-                        st.session_state.pending_data = datos_registro
-                        st.rerun() # Recargamos para mostrar los botones de confirmar
-
-    # Si HAY datos pendientes de confirmar, mostramos la alerta y botones
+                        st.session_state.pending_data = datos
+                        st.rerun()
     else:
-        st.warning(f"⚠️ **¡ALERTA!** No he encontrado el ticker **'{st.session_state.pending_data['Ticker']}'** en ninguna base de datos oficial (o su precio es 0).")
-        st.write("¿Estás seguro de que está bien escrito?")
-        
-        col_si, col_no = st.columns(2)
-        
-        if col_si.button("✅ SÍ, Guardar de todas formas"):
-            # Guardamos lo que había en memoria, aunque esté 'mal'
-            guardar_en_airtable(st.session_state.pending_data)
-            
-        if col_no.button("❌ NO, Cancelar"):
-            st.session_state.pending_data = None # Borramos memoria
+        st.warning(f"⚠️ No encuentro '{st.session_state.pending_data['Ticker']}'. ¿Confirmar?")
+        c1, c2 = st.columns(2)
+        if c1.button("✅ Sí, Guardar"): guardar_en_airtable(st.session_state.pending_data)
+        if c2.button("❌ Cancelar"): 
+            st.session_state.pending_data = None
             st.rerun()
 
-# --- CÁLCULOS (Visor) ---
+# --- CÁLCULOS HISTÓRICOS PUROS ---
 try: data = table.all()
 except: data = []
 
@@ -174,75 +159,100 @@ if data:
     total_divis_eur = 0
     total_comis_eur = 0
     
+    # Pre-calculamos tipos de cambio actuales para homogeneizar saldos
+    # (Necesario para sumar USD y EUR en una sola cartera)
+    fx_cache = {}
+
+    def get_fx_cached(moneda):
+        if moneda == MONEDA_BASE: return 1.0
+        if moneda not in fx_cache:
+            fx_cache[moneda] = get_exchange_rate(moneda, MONEDA_BASE)
+        return fx_cache[moneda]
+
     for i, row in df.iterrows():
         tipo = row.get('Tipo')
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
-        raw_desc = row.get('Descripcion')
-        if pd.isna(raw_desc) or not raw_desc: desc = tick
-        else: desc = str(raw_desc).strip() or tick
-
-        dinero = float(row.get('Cantidad', 0))
-        precio = float(row.get('Precio', 1))
-        if precio == 0: precio = 1 
-        comi = float(row.get('Comision', 0))
-        moneda = row.get('Moneda', 'EUR')
+        desc = str(row.get('Descripcion', tick)).strip() or tick
         
-        num_acciones = dinero / precio
-        fx = get_exchange_rate(moneda, MONEDA_BASE)
+        dinero_bruto = float(row.get('Cantidad', 0)) # Dinero de la operación
+        precio = float(row.get('Precio', 1)) 
+        if precio <= 0: precio = 1
+        
+        moneda = row.get('Moneda', 'EUR')
+        comi = float(row.get('Comision', 0))
+        
+        # Obtenemos cambio para convertir todo a EUR base
+        fx = get_fx_cached(moneda)
+        dinero_eur = dinero_bruto * fx
+        
+        # Calculamos acciones SOLO para saber si la posición sigue abierta
+        num_acciones = dinero_bruto / precio
+        
         total_comis_eur += (comi * fx)
         
         if tipo == "Compra":
-            if tick not in cartera: cartera[tick] = {'acciones': 0, 'desc': desc, 'moneda': moneda}
+            if tick not in cartera: 
+                cartera[tick] = {'acciones': 0, 'saldo_neto_eur': 0.0, 'desc': desc}
+            
             cartera[tick]['acciones'] += num_acciones
-            if len(str(desc)) > len(str(cartera[tick]['desc'])): cartera[tick]['desc'] = str(desc)
+            # SUMAMOS dinero invertido
+            cartera[tick]['saldo_neto_eur'] += dinero_eur
+            
+            if len(desc) > len(cartera[tick]['desc']): cartera[tick]['desc'] = desc
+            
         elif tipo == "Venta":
             if tick in cartera:
                 cartera[tick]['acciones'] -= num_acciones
                 if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
-        elif tipo == "Dividendo":
-            total_divis_eur += (dinero * fx)
-
-    # --- DASHBOARD ---
-    val_total = 0
-    tabla = []
-    
-    with st.spinner("Valorando..."):
-        for t, info in cartera.items():
-            acc = info['acciones']
-            if acc > 0.001:
-                # Valoración Híbrida
-                _, p_now = get_stock_data_fmp(t)
-                if not p_now:
-                    try: p_now = yf.Ticker(t).history(period="1d")['Close'].iloc[-1]
-                    except: pass
                 
-                if p_now:
-                    mon = info['moneda']
-                    fx = get_exchange_rate(mon, MONEDA_BASE)
-                    val = acc * p_now * fx
-                    val_total += val
-                    tabla.append({
-                        "Empresa": info['desc'], "Ticker": t,
-                        "Acciones": f"{acc:.4f}", "Precio": f"{p_now:.2f} {mon}",
-                        "Valor (€)": val
-                    })
-                # Si no hay precio online, podemos mostrar el valor de coste o avisar
-                # De momento solo mostramos si hay precio para no romper la tabla
+                # RESTAMOS dinero recuperado (Lógica: Inversión - Retorno)
+                cartera[tick]['saldo_neto_eur'] -= dinero_eur
+                
+        elif tipo == "Dividendo":
+            total_divis_eur += dinero_eur
 
+    # --- VISUALIZACIÓN ---
+    
+    saldo_total_cartera = 0
+    tabla_final = []
+    
+    # Filtramos para mostrar: Tickers donde aún tengamos acciones > 0
+    for t, info in cartera.items():
+        if info['acciones'] > 0.001:
+            saldo_vivo = info['saldo_neto_eur']
+            saldo_total_cartera += saldo_vivo
+            
+            tabla_final.append({
+                "Empresa": info['desc'],
+                "Ticker": t,
+                "Acciones (Est.)": f"{info['acciones']:.4f}",
+                "Saldo Invertido (€)": saldo_vivo
+            })
+
+    # BLOQUE DE MÉTRICAS (Totalmente basado en histórico)
     c1, c2, c3 = st.columns(3)
-    c1.metric("Cartera", f"{val_total:,.2f} €")
-    c2.metric("Dividendos", f"{total_divis_eur:,.2f} €")
-    c3.metric("Comisiones", f"{total_comis_eur:,.2f} €")
+    c1.metric("Dinero en Cartera", f"{saldo_total_cartera:,.2f} €", help="Total invertido - Total retirado")
+    c2.metric("Dividendos Totales", f"{total_divis_eur:,.2f} €")
+    c3.metric("Comisiones Pagadas", f"{total_comis_eur:,.2f} €")
     
     st.divider()
-    if tabla:
-        st.subheader("📊 Posiciones")
-        st.dataframe(pd.DataFrame(tabla).style.format({"Valor (€)": "{:.2f} €"}), use_container_width=True)
     
-    with st.expander("Historial"):
-        if not df.empty:
-            cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio'] if c in df.columns]
-            st.dataframe(df[cols].sort_values(by="Fecha", ascending=False), use_container_width=True)
+    if tabla_final:
+        st.subheader("📊 ACCIONES EN CARTERA actual")
+        df_tabla = pd.DataFrame(tabla_final)
+        
+        # Formato simple, sin colores de mercado ni precios online
+        st.dataframe(
+            df_tabla.style.format({"Saldo Invertido (€)": "{:.2f} €"}), 
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No tienes acciones en cartera (Saldo de acciones = 0).")
+    
+    with st.expander("Historial Completo"):
+        cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio','Moneda'] if c in df.columns]
+        st.dataframe(df[cols].sort_values(by="Fecha", ascending=False), use_container_width=True)
 
 else:
     st.info("Sin datos.")
