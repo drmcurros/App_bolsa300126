@@ -6,7 +6,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Pro V6", layout="wide") 
+st.set_page_config(page_title="Gestor Pro V6.1", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO (SESSION STATE) ---
@@ -96,7 +96,6 @@ if data:
 # --- BARRA LATERAL (Lógica de Botones) ---
 with st.sidebar:
     
-    # 1. Selector de Año (Siempre visible)
     st.header("Filtros")
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
@@ -105,25 +104,22 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     st.divider()
 
-    # 2. BOTÓN PRINCIPAL: ¿Mostrar o no el formulario?
-    # Si NO estamos añadiendo Y NO hay nada pendiente -> Mostramos el botón de añadir
+    # Botón Principal
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
             st.rerun()
 
-    # 3. FORMULARIO (Solo si adding_mode es True o hay datos pendientes)
+    # Formulario de Registro
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         
         st.markdown("### 📝 Datos de la Operación")
         
-        # Botón para cancelar/cerrar
         if st.button("❌ Cerrar Formulario", use_container_width=True):
             st.session_state.adding_mode = False
             st.session_state.pending_data = None
             st.rerun()
 
-        # Si no hay alerta de confirmación, mostramos el formulario normal
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
@@ -162,28 +158,19 @@ with st.sidebar:
                             "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
                         }
                         
-                        # Si encontramos precio, guardamos y cerramos
-                        if pre > 0: 
-                            guardar_en_airtable(datos)
+                        if pre > 0: guardar_en_airtable(datos)
                         else:
-                            # Si no, pasamos a modo confirmación
                             st.session_state.pending_data = datos
                             st.rerun()
-        
-        # Si HAY datos pendientes (Modo Confirmación), mostramos la alerta en lugar del form
         else:
-            st.warning(f"⚠️ **ALERTA:** No encuentro precio/nombre para **'{st.session_state.pending_data['Ticker']}'**.")
-            st.write("¿Quieres guardarlo de todas formas con precio 0 o revisarlo?")
-            
+            st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
             c_si, c_no = st.columns(2)
-            if c_si.button("✅ Guardar"): 
-                guardar_en_airtable(st.session_state.pending_data)
-            
+            if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): 
                 st.session_state.pending_data = None
                 st.rerun()
 
-# --- CÁLCULO ---
+# --- CÁLCULO DE RENTABILIDAD ---
 if not df.empty:
     df_filtrado = df.copy()
     if año_seleccionado != "Todos los años":
@@ -243,7 +230,7 @@ if not df.empty:
         elif tipo == "Dividendo":
             total_dividendos += dinero_eur
 
-    # --- TABLA ---
+    # --- TABLA Y VISUALIZACIÓN ---
     tabla_final = []
     saldo_invertido_total = 0 
 
@@ -273,14 +260,33 @@ if not df.empty:
         df_show = pd.DataFrame(tabla_final)
         st.subheader(f"📊 Rentabilidad {año_seleccionado}")
         
+        # --- CONFIGURACIÓN SEPARADA PARA EVITAR ERRORES DE SINTAXIS ---
+        cfg_columnas = {
+            "Empresa": st.column_config.TextColumn("Empresa", help="Nombre comercial."),
+            "Ticker": st.column_config.TextColumn("Ticker", help="Símbolo bursátil."),
+            "Acciones": st.column_config.NumberColumn("Acciones", help="Títulos en posesión.", format="%.4f"),
+            "PMC": st.column_config.NumberColumn("PMC (Medio)", help="Precio Medio de Compra.", format="%.2f"),
+            "Saldo Invertido": st.column_config.NumberColumn("Saldo Invertido (€)", help="Coste base remanente.", format="%.2f €"),
+            "Bº/P (Cerrado)": st.column_config.NumberColumn("Bº/P (Cerrado)", help="Beneficio/Pérdida de ventas ya cerradas.", format="%.2f €"),
+        }
+
+        # Aplicamos estilo
+        estilo = df_show.style.map(
+            lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
+            subset=['Bº/P (Cerrado)']
+        )
+
+        # Mostramos tabla
         st.dataframe(
-            df_show.style.map(
-                lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
-                subset=['Bº/P (Cerrado)']
-            ),
-            column_config={
-                "Empresa": st.column_config.TextColumn("Empresa", help="Nombre comercial."),
-                "Ticker": st.column_config.TextColumn("Ticker", help="Símbolo bursátil."),
-                "Acciones": st.column_config.NumberColumn("Acciones", help="Títulos en posesión.", format="%.4f"),
-                "PMC": st.column_config.NumberColumn("PMC (Medio)", help="Precio Medio de Compra.", format="%.2f"),
-                "Saldo Invertido": st.column_config.
+            estilo,
+            column_config=cfg_columnas,
+            use_container_width=True, 
+            hide_index=True
+        )
+    
+    with st.expander("📝 Ver Histórico"):
+        cols = [c for c in ['Fecha_str','Tipo','Ticker','Cantidad','Precio','Moneda'] if c in df_filtrado.columns]
+        st.dataframe(df_filtrado[cols].sort_values(by="Fecha_str", ascending=False), use_container_width=True)
+
+else:
+    st.info("Sin datos.")
