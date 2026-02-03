@@ -8,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V11.0 (Gráficos Pro)", layout="wide") 
+st.set_page_config(page_title="Gestor V11.2 (Color Burdeos)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -175,7 +175,7 @@ if data:
             total_dividendos += dinero_eur
 
 # ==========================================
-#        VISTA DE DETALLE (CON CONTROLES GRÁFICOS)
+#        VISTA DE DETALLE (CON GRÁFICOS)
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
@@ -193,19 +193,16 @@ if st.session_state.ticker_detalle:
         st.title(f"{info.get('desc', t)} ({t})")
         st.caption("Ficha detallada del activo")
 
-    # --- CONTROLES GRÁFICOS ---
+    # CONTROLES GRÁFICOS
     st.write("⚙️ **Configuración del Gráfico**")
     c_time, c_type = st.columns(2)
     
-    # 1. Selector de Tiempo
     opciones_tiempo = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
-    
-    # 2. Selector de Tipo
     tipo_grafico = c_type.radio("Estilo", ["Línea", "Velas"], horizontal=True)
 
-    # --- CARGA DE DATOS ---
+    # CARGA DATOS
     with st.spinner(f"Cargando gráfico ({label_tiempo})..."):
         nombre, precio_now, descripcion_larga = get_stock_data_fmp(t)
         if not precio_now: nombre, precio_now, descripcion_larga = get_stock_data_yahoo(t)
@@ -215,11 +212,10 @@ if st.session_state.ticker_detalle:
             ticker_obj = yf.Ticker(t)
             historia = ticker_obj.history(period=periodo_api)
             historia = historia.reset_index()
-            # Normalizar fechas para cruzar con movimientos
             historia['Date'] = pd.to_datetime(historia['Date']).dt.date
         except: pass
 
-    # --- MÉTRICAS ---
+    # MÉTRICAS
     m1, m2, m3, m4 = st.columns(4)
     acciones_activas = info.get('acciones', 0)
     pmc_actual = info.get('pmc', 0)
@@ -239,29 +235,25 @@ if st.session_state.ticker_detalle:
               help="Valor actual si vendieras hoy")
     m4.metric("Bº Realizado", f"{info.get('pnl_cerrado',0):,.2f} €", delta="Ya cobrado")
 
-    # --- RENDERIZADO DEL GRÁFICO (ALTAIR) ---
+    # --- GRÁFICO ALTAIR ---
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # Base común
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # 1. CAPA DE PRECIO (LÍNEA O VELAS)
+        # 1. CAPA PRECIO
         grafico_base = None
-        
         if tipo_grafico == "Línea":
             grafico_base = base.mark_line(color='#29b5e8').encode(
                 y=alt.Y('Close', scale=alt.Scale(zero=False), title='Precio'),
                 tooltip=['Date', 'Close']
             )
         else: # Velas
-            # Regla (Mecha: High -> Low)
             rule = base.mark_rule().encode(
                 y=alt.Y('Low', scale=alt.Scale(zero=False), title='Precio'),
                 y2='High',
                 color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
             )
-            # Barra (Cuerpo: Open -> Close)
             bar = base.mark_bar(width=8).encode(
                 y='Open',
                 y2='Close',
@@ -270,16 +262,19 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # 2. CAPA DE OPERACIONES (TRIÁNGULOS)
+        # 2. CAPA OPERACIONES
         movs_raw = info.get('movimientos', [])
-        puntos_compra = alt.Chart(pd.DataFrame()).mark_point()
-        puntos_venta = alt.Chart(pd.DataFrame()).mark_point()
+        capa_compras = alt.Chart(pd.DataFrame()).mark_point()
+        capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
+        
+        # === COLORES DEFINIDOS AQUÍ ===
+        COLOR_COMPRA = "#0044FF"  # Azul
+        COLOR_VENTA = "#800020"   # Burdeos (Vino)
 
         if movs_raw:
             df_movs_chart = pd.DataFrame(movs_raw)
             df_movs_chart['Date'] = pd.to_datetime(df_movs_chart['Fecha_Raw']).dt.date
             
-            # Filtro fecha (para no pintar compras de hace 10 años en el gráfico de 1 mes)
             min_date = historia['Date'].min()
             df_movs_chart = df_movs_chart[df_movs_chart['Date'] >= min_date]
             
@@ -287,30 +282,41 @@ if st.session_state.ticker_detalle:
                 # Compras
                 compras = df_movs_chart[df_movs_chart['Tipo'] == 'Compra']
                 if not compras.empty:
-                    puntos_compra = alt.Chart(compras).mark_point(
-                        shape='triangle-up', size=150, color='#00FF00', filled=True, opacity=1
+                    rule_compra = alt.Chart(compras).mark_rule(
+                        color=COLOR_COMPRA, strokeDash=[4, 4], opacity=0.6
+                    ).encode(x='Date:T')
+                    
+                    point_compra = alt.Chart(compras).mark_point(
+                        shape='triangle-up', size=150, color=COLOR_COMPRA, filled=True, opacity=1
                     ).encode(
                         x='Date:T', y='Precio',
-                        tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', title='Precio Compra'), alt.Tooltip('Cantidad', title='Invertido')]
+                        tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', title='Compra a'), alt.Tooltip('Cantidad', title='Invertido')]
                     )
+                    capa_compras = rule_compra + point_compra
+
                 # Ventas
                 ventas = df_movs_chart[df_movs_chart['Tipo'] == 'Venta']
                 if not ventas.empty:
-                    puntos_venta = alt.Chart(ventas).mark_point(
-                        shape='triangle-down', size=150, color='#FF0000', filled=True, opacity=1
+                    rule_venta = alt.Chart(ventas).mark_rule(
+                        color=COLOR_VENTA, strokeDash=[4, 4], opacity=0.6
+                    ).encode(x='Date:T')
+                    
+                    point_venta = alt.Chart(ventas).mark_point(
+                        shape='triangle-down', size=150, color=COLOR_VENTA, filled=True, opacity=1
                     ).encode(
                         x='Date:T', y='Precio',
-                        tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', title='Precio Venta'), alt.Tooltip('Cantidad', title='Recuperado')]
+                        tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', title='Venta a'), alt.Tooltip('Cantidad', title='Recuperado')]
                     )
+                    capa_ventas = rule_venta + point_venta
 
-        # Combinamos capas
-        chart_final = (grafico_base + puntos_compra + puntos_venta).interactive()
+        chart_final = (grafico_base + capa_compras + capa_ventas).interactive()
         st.altair_chart(chart_final, use_container_width=True)
+        
+        st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)** | Línea discontinua indica el día exacto.")
         
     else:
         st.warning("No se pudo cargar el historial de precios.")
 
-    # --- RESTO DE INFO ---
     with st.expander("📖 Sobre la empresa"):
         st.write(descripcion_larga if descripcion_larga else "No hay descripción disponible.")
 
