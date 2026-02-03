@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V8.1 (Blindado)", layout="wide") 
+st.set_page_config(page_title="Gestor V8.2 (Métricas Pro)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -43,7 +43,6 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
     except: return 1.0
 
 def get_logo_url(ticker):
-    # FMP Logo
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
 def get_stock_data_fmp(ticker):
@@ -85,7 +84,6 @@ def guardar_en_airtable(record):
 # --- APP ---
 if not check_password(): st.stop()
 
-# Conexión Segura
 try:
     api = Api(st.secrets["airtable"]["api_token"])
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
@@ -95,28 +93,22 @@ except Exception as e:
 
 st.title("💼 Control de Rentabilidad (P&L)")
 
-# --- CARGA DATOS (CON LIMPIEZA) ---
+# --- CARGA DATOS ---
 try: data = table.all()
 except: data = []
 
 df = pd.DataFrame()
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
-    
-    # === LIMPIEZA DE COLUMNAS (CRUCIAL) ===
-    # Quitamos espacios en blanco de los nombres de columnas
-    df.columns = df.columns.str.strip()
-    # ======================================
+    df.columns = df.columns.str.strip() # Limpieza de espacios
 
     if 'Fecha' in df.columns:
         df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
         df['Año'] = df['Fecha_dt'].dt.year 
         df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M').fillna("")
     else: 
-        # Si no hay fecha, creamos una fake para que no falle
         df['Año'] = datetime.now().year
         df['Fecha_dt'] = datetime.now()
-        df['Fecha_str'] = ""
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -207,7 +199,6 @@ if not df.empty:
     else:
         st.info("Visualizando acumulado histórico.")
 
-    # Convertimos numéricos con seguridad usando .get() por si cambia el nombre
     cols_numericas = ["Cantidad", "Precio", "Comision"]
     for col in cols_numericas:
         if col in df_filtrado.columns:
@@ -217,9 +208,11 @@ if not df.empty:
     total_dividendos = 0.0 
     total_comisiones = 0.0
     pnl_global_cerrado = 0.0 
+    
+    # NUEVO: Acumulador de inversión histórica para calcular ROI %
+    total_compras_historicas_eur = 0.0
 
     for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
-        # Uso .get() para evitar KeyErrors si falta alguna columna
         tipo = row.get('Tipo', 'Desconocido')
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
         desc = str(row.get('Descripcion', tick)).strip() or tick
@@ -244,6 +237,10 @@ if not df.empty:
         if tipo == "Compra":
             cartera[tick]['acciones'] += acciones_op
             cartera[tick]['coste_total_eur'] += dinero_eur
+            
+            # Sumamos al histórico de compras para calcular ROI luego
+            total_compras_historicas_eur += dinero_eur 
+
             if cartera[tick]['acciones'] > 0:
                 cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
             if len(desc) > len(cartera[tick]['desc']): cartera[tick]['desc'] = desc
@@ -260,7 +257,7 @@ if not df.empty:
         elif tipo == "Dividendo":
             total_dividendos += dinero_eur
 
-    # --- VISUALIZACIÓN ---
+    # --- TABLA Y VALORACIÓN ONLINE ---
     tabla_final = []
     saldo_invertido_total = 0 
     fx_usd_now = get_exchange_rate_now("USD", "EUR")
@@ -302,54 +299,35 @@ if not df.empty:
                     "% Latente": rentabilidad_pct
                 })
 
+    # === CÁLCULOS FINALES DE RENTABILIDAD ===
     beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
+    
+    # Calcular ROI Total % (Beneficio Neto / Total Dinero Invertido Históricamente)
+    roi_total_pct = 0.0
+    if total_compras_historicas_eur > 0:
+        roi_total_pct = (beneficio_neto_total / total_compras_historicas_eur) * 100
 
+    # MÉTRICAS CON COLOR Y PORCENTAJE
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("💰 BENEFICIO TOTAL NETO", f"{beneficio_neto_total:,.2f} €", delta="Limpio")
-    m2.metric("Bº/P Trading (Cerrado)", f"{pnl_global_cerrado:,.2f} €")
-    m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €")
-    m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €")
     
-    st.caption(f"**Dinero Invertido (Coste actual):** {saldo_invertido_total:,.2f} €")
-    st.divider()
+    # 1. BENEFICIO NETO (Con Color y %)
+    m1.metric(
+        "💰 BENEFICIO TOTAL NETO", 
+        f"{beneficio_neto_total:,.2f} €", 
+        delta=f"{roi_total_pct:+.2f} % (ROI)", # Esto pone el % y el color verde/rojo automáticamente
+        help="Beneficio limpio (Trading + Div - Comisiones) respecto al total invertido."
+    )
     
-    if tabla_final:
-        df_show = pd.DataFrame(tabla_final)
-        st.subheader(f"📊 Detalle por Acción ({año_seleccionado})")
-        
-        cfg_columnas = {
-            "Logo": st.column_config.ImageColumn("Logo", width="small"),
-            "Empresa": st.column_config.TextColumn("Empresa"),
-            "Ticker": st.column_config.TextColumn("Ticker"),
-            "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
-            "PMC": st.column_config.NumberColumn("PMC", help="Coste medio", format="%.2f €"),
-            "Precio Mercado": st.column_config.TextColumn("Precio Mercado"),
-            "Saldo Invertido": st.column_config.NumberColumn("Invertido", help="Coste vivo", format="%.2f €"),
-            "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", help="Ganancia Trading", format="%.2f €"),
-            "% Latente": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
-        }
-
-        def color_rentabilidad(val):
-            color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
-            return f'color: {color}; font-weight: bold;'
-
-        st.dataframe(
-            df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Latente'])
-                         .format({'% Latente': "{:.2%}"}), 
-            column_config=cfg_columnas,
-            use_container_width=True, 
-            hide_index=True
-        )
+    # 2. TRADING (Con Color)
+    m2.metric(
+        "Bº/P Trading (Cerrado)", 
+        f"{pnl_global_cerrado:,.2f} €", 
+        delta=f"{pnl_global_cerrado:,.2f} €", # Repetimos el valor en delta para forzar el color verde/rojo
+        help="Ganancia o pérdida directa por compra-venta de acciones."
+    )
     
-    with st.expander("📝 Ver Histórico"):
-        # Mostramos todas las columnas disponibles por si acaso
-        st.dataframe(df_filtrado.sort_values(by="Fecha_dt", ascending=False), use_container_width=True)
-
-    # --- VISOR DE EMERGENCIA (DEBUGGER) ---
-    with st.expander("🔍 DEBUG: Datos Crudos (Si ves esto, funciona)"):
-        st.write(f"Total filas descargadas: {len(df)}")
-        st.write("Columnas disponibles:", df.columns.tolist())
-        st.dataframe(df.head())
-
-else:
-    st.info("Sin datos. Añade tu primera operación con el botón superior.")
+    # 3. DIVIDENDOS (Siempre positivo o neutro)
+    m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €", delta=None)
+    
+    # 4. COMISIONES (Rojo inverso para indicar coste)
+    m4.metric("Comisiones Totales", f"-{total_comisiones:
