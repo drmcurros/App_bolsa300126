@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
+import altair as alt  # IMPORTANTE: Librería gráfica avanzada
 from pyairtable import Api
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V9.0 (Detalle Gráfico)", layout="wide") 
+st.set_page_config(page_title="Gestor V10.0 (Gráficos Pro)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO (SESSION STATE) ---
@@ -17,7 +18,6 @@ if "adding_mode" not in st.session_state:
     st.session_state.adding_mode = False
 if "reset_seed" not in st.session_state:
     st.session_state.reset_seed = 0
-# NUEVO: Estado para saber qué acción estamos viendo en detalle
 if "ticker_detalle" not in st.session_state:
     st.session_state.ticker_detalle = None
 
@@ -95,13 +95,12 @@ except Exception as e:
     st.error(f"Error conectando a Airtable: {e}")
     st.stop()
 
-# --- CARGA Y PROCESAMIENTO INICIAL DE DATOS ---
-# (Calculamos todo primero para tener los datos listos para cualquier vista)
+# --- CARGA Y PROCESAMIENTO ---
 try: data = table.all()
 except: data = []
 
 df = pd.DataFrame()
-cartera_global = {} # Diccionario global para acceder desde el detalle
+cartera_global = {} 
 
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
@@ -115,21 +114,17 @@ if data:
         df['Año'] = datetime.now().year
         df['Fecha_dt'] = datetime.now()
 
-    # --- PROCESAMIENTO DE CARTERA ---
     cols_numericas = ["Cantidad", "Precio", "Comision"]
     for col in cols_numericas:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
     
-    # Variables globales para el dashboard principal
     total_dividendos = 0.0 
     total_comisiones = 0.0
     pnl_global_cerrado = 0.0 
     total_compras_historicas_eur = 0.0
     coste_ventas_total = 0.0
 
-    # Iteramos sobre TODO el histórico (sin filtrar por año para la cartera actual)
-    # Nota: Para el dashboard principal usaremos filtros, pero para la cartera viva necesitamos todo.
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
         tipo = row.get('Tipo', 'Desconocido')
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
@@ -144,17 +139,17 @@ if data:
         dinero_eur = dinero * fx
         acciones_op = dinero / precio 
         
-        # Acumulados globales
         total_comisiones += (comi * fx)
 
         if tick not in cartera_global:
             cartera_global[tick] = {
                 'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 
                 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon,
-                'movimientos': [] # Guardamos índices para el detalle
+                'movimientos': []
             }
         
-        # Guardamos referencia del movimiento
+        # Guardamos datos crudos para el gráfico
+        row['Fecha_Raw'] = row.get('Fecha_dt') # Guardamos datetime real
         cartera_global[tick]['movimientos'].append(row)
 
         if tipo == "Compra":
@@ -182,50 +177,43 @@ if data:
 
 
 # ==========================================
-#        CONTROLADOR DE VISTAS
+#        VISTA DE DETALLE (CON GRÁFICOS)
 # ==========================================
-
-# 1. SI HAY UN TICKER SELECCIONADO -> VISTA DE DETALLE
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
     info = cartera_global.get(t, {})
     
-    # Botón Volver
     if st.button("⬅️ Volver a la Cartera Principal", type="secondary"):
         st.session_state.ticker_detalle = None
         st.rerun()
     
     st.divider()
 
-    # --- ENCABEZADO DETALLE ---
     c_logo, c_tit = st.columns([1, 5])
-    with c_logo:
-        st.image(get_logo_url(t), width=80)
+    with c_logo: st.image(get_logo_url(t), width=80)
     with c_tit:
         st.title(f"{info.get('desc', t)} ({t})")
         st.caption("Ficha detallada del activo")
 
-    # --- DATOS EN TIEMPO REAL ---
-    with st.spinner(f"Descargando datos de mercado y gráfico para {t}..."):
-        # Precio actual
+    # DATOS MERCADO
+    with st.spinner(f"Cargando gráfico interactivo de {t}..."):
         nombre, precio_now, descripcion_larga = get_stock_data_fmp(t)
-        if not precio_now: 
-            nombre, precio_now, descripcion_larga = get_stock_data_yahoo(t)
+        if not precio_now: nombre, precio_now, descripcion_larga = get_stock_data_yahoo(t)
         
-        # Gráfico histórico (1 año)
+        # HISTORIAL DE PRECIOS
         historia = pd.DataFrame()
         try:
             ticker_obj = yf.Ticker(t)
             historia = ticker_obj.history(period="1y")
+            historia = historia.reset_index() # Fecha a columna
+            # Normalizar fechas para cruzar con movimientos
+            historia['Date'] = pd.to_datetime(historia['Date']).dt.date
         except: pass
 
-    # --- MÉTRICAS SUPERIORES ---
+    # MÉTRICAS
     m1, m2, m3, m4 = st.columns(4)
-    
     acciones_activas = info.get('acciones', 0)
     pmc_actual = info.get('pmc', 0)
-    
-    # Calculo valor actual posición
     valor_mercado_eur = 0.0
     rentabilidad_latente = 0.0
     if precio_now and acciones_activas > 0:
@@ -235,57 +223,94 @@ if st.session_state.ticker_detalle:
             rentabilidad_latente = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur', 0)
 
     mon_sim = info.get('moneda_origen', '')
-
     m1.metric("Precio Actual", f"{precio_now:,.2f} {mon_sim}" if precio_now else "N/A")
     m2.metric("Tus Acciones", f"{acciones_activas:,.4f}")
     m3.metric("Valor en Cartera", f"{valor_mercado_eur:,.2f} €", 
               delta=f"{rentabilidad_latente:+.2f}%" if acciones_activas > 0 else "0%",
               help="Valor actual si vendieras hoy")
-    m4.metric("Bº Realizado (Histórico)", f"{info.get('pnl_cerrado',0):,.2f} €", 
-              delta="Ya cobrado", help="Dinero ganado en ventas anteriores")
+    m4.metric("Bº Realizado", f"{info.get('pnl_cerrado',0):,.2f} €", delta="Ya cobrado")
 
-    # --- GRÁFICO ---
-    st.subheader("📈 Evolución (1 Año)")
+    # --- GRÁFICO INTERACTIVO CON ALTAIR (LA MAGIA) ---
+    st.subheader("📈 Tus Puntos de Entrada y Salida")
+    
     if not historia.empty:
-        st.line_chart(historia['Close'], color="#00FF00", height=300)
-    else:
-        st.warning("No se pudo cargar el gráfico histórico.")
+        # 1. Capa de Precio (Línea)
+        base = alt.Chart(historia).encode(x='Date:T')
+        linea = base.mark_line(color='#29b5e8').encode(
+            y=alt.Y('Close', scale=alt.Scale(zero=False), title='Precio'),
+            tooltip=['Date', 'Close']
+        )
+        
+        # 2. Preparar Capa de Operaciones
+        movs_raw = info.get('movimientos', [])
+        df_movs_chart = pd.DataFrame()
+        
+        if movs_raw:
+            df_movs_chart = pd.DataFrame(movs_raw)
+            # Aseguramos fecha limpia
+            df_movs_chart['Date'] = pd.to_datetime(df_movs_chart['Fecha_Raw']).dt.date
+            # Filtramos solo movimientos que caigan dentro del gráfico (último año)
+            min_date = historia['Date'].min()
+            df_movs_chart = df_movs_chart[df_movs_chart['Date'] >= min_date]
+            
+            # Filtramos solo Compras y Ventas (Dividendos no se pintan en el precio)
+            df_movs_chart = df_movs_chart[df_movs_chart['Tipo'].isin(['Compra', 'Venta'])]
 
-    # --- DESCRIPCIÓN ---
+        # 3. Dibujar Puntos (si hay)
+        puntos_compra = alt.Chart(pd.DataFrame()).mark_point()
+        puntos_venta = alt.Chart(pd.DataFrame()).mark_point()
+
+        if not df_movs_chart.empty:
+            # Compras: Triángulo Verde Hacia Arriba
+            compras = df_movs_chart[df_movs_chart['Tipo'] == 'Compra']
+            if not compras.empty:
+                puntos_compra = alt.Chart(compras).mark_point(
+                    shape='triangle-up', size=100, color='#00FF00', filled=True
+                ).encode(
+                    x='Date:T',
+                    y='Precio',
+                    tooltip=['Date', 'Tipo', 'Cantidad', 'Precio']
+                )
+
+            # Ventas: Triángulo Rojo Hacia Abajo
+            ventas = df_movs_chart[df_movs_chart['Tipo'] == 'Venta']
+            if not ventas.empty:
+                puntos_venta = alt.Chart(ventas).mark_point(
+                    shape='triangle-down', size=100, color='#FF0000', filled=True
+                ).encode(
+                    x='Date:T',
+                    y='Precio',
+                    tooltip=['Date', 'Tipo', 'Cantidad', 'Precio']
+                )
+
+        # Combinamos todo
+        chart_final = (linea + puntos_compra + puntos_venta).interactive()
+        st.altair_chart(chart_final, use_container_width=True)
+        
+        st.caption("🟢 Triángulo Verde: Compra | 🔴 Triángulo Rojo: Venta")
+    else:
+        st.warning("No se pudo cargar el historial de precios para pintar el gráfico.")
+
+    # --- LISTADO ---
     with st.expander("📖 Sobre la empresa"):
         st.write(descripcion_larga if descripcion_larga else "No hay descripción disponible.")
 
-    # --- TUS MOVIMIENTOS ---
-    st.subheader(f"📝 Tus Movimientos en {t}")
-    movs = info.get('movimientos', [])
-    if movs:
-        df_movs = pd.DataFrame(movs)
-        cols_mostrar = ['Fecha_str', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision']
-        # Renombrar para que se vea bien
-        df_movs = df_movs[cols_mostrar].rename(columns={
-            'Fecha_str': 'Fecha', 
-            'Cantidad': 'Importe Total',
-            'Precio': 'Precio Ejecución'
-        })
-        st.dataframe(
-            df_movs.sort_values(by="Fecha", ascending=False), 
-            use_container_width=True, 
-            hide_index=True
-        )
-    else:
-        st.info("No hay movimientos registrados.")
+    st.subheader(f"📝 Historial de Operaciones")
+    if movs_raw:
+        df_movs_show = pd.DataFrame(movs_raw)
+        df_movs_show = df_movs_show[['Fecha_str', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision']]
+        df_movs_show = df_movs_show.rename(columns={'Fecha_str': 'Fecha', 'Cantidad': 'Importe Total'})
+        st.dataframe(df_movs_show.sort_values(by="Fecha", ascending=False), use_container_width=True, hide_index=True)
 
 # ==========================================
-#        VISTA PRINCIPAL (DASHBOARD)
+#        VISTA DASHBOARD (PRINCIPAL)
 # ==========================================
 else:
-    # --- BARRA LATERAL (Solo visible en dashboard principal) ---
     with st.sidebar:
         st.header("Configuración")
         mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
         mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=0)
         st.divider()
-        
         st.header("Filtros")
         lista_años = ["Todos los años"]
         if not df.empty and 'Año' in df.columns:
@@ -313,16 +338,13 @@ else:
                     ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                     desc_manual = st.text_input("Descripción (Opcional)")
                     moneda = st.selectbox("Moneda", ["EUR", "USD"])
-                    
                     c1, c2 = st.columns(2)
                     dinero_total = c1.number_input("Importe Total", min_value=0.0, step=10.0)
                     precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                     comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-                    
                     st.markdown("---")
                     st.write(f"📆 **Fecha ({mi_zona}):**")
                     ahora_local = datetime.now(ZoneInfo(mi_zona))
-                    
                     cd, ct = st.columns(2)
                     f_in = cd.date_input("Día", value=ahora_local, key=f"d_{st.session_state.reset_seed}")
                     h_in = ct.time_input("Hora", value=ahora_local, key=f"t_{st.session_state.reset_seed}")
@@ -338,7 +360,6 @@ else:
                             if not nom: nom = ticker
                             if precio_manual > 0: pre = precio_manual
                             if not pre: pre = 0.0
-
                             dt_final = datetime.combine(f_in, h_in)
                             datos = {
                                 "Tipo": tipo, "Ticker": ticker, "Descripcion": nom, 
@@ -346,7 +367,6 @@ else:
                                 "Precio": float(pre), "Comision": float(comision),
                                 "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
                             }
-                            
                             if pre > 0: guardar_en_airtable(datos)
                             else:
                                 st.session_state.pending_data = datos
@@ -359,13 +379,8 @@ else:
                     st.session_state.pending_data = None
                     st.rerun()
 
-    # --- PANTALLA PRINCIPAL ---
     st.title("💼 Control de Rentabilidad (P&L)")
-
-    # Filtro de visualización para la tabla (los acumulados de arriba no cambian para mantener coherencia de rentabilidad total, 
-    # pero puedes ajustar esto si prefieres que las métricas también filtren por año)
     
-    # MÉTRICAS GENERALES
     beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
     roi_total_pct = 0.0
     if total_compras_historicas_eur > 0:
@@ -383,8 +398,6 @@ else:
     
     st.divider()
 
-    # PREPARAR TABLA FINAL
-    # Aquí es donde ocurre la magia de la selección
     tabla_final = []
     fx_usd_now = get_exchange_rate_now("USD", "EUR")
 
@@ -392,7 +405,6 @@ else:
         for t, info in cartera_global.items():
             if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
                 saldo_vivo = info['coste_total_eur']
-                
                 rentabilidad_pct = 0.0
                 precio_mercado_str = "0.00"
                 logo_url = get_logo_url(t)
@@ -400,41 +412,30 @@ else:
                 if info['acciones'] > 0.001:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
-                    
                     if p_now:
                         moneda_act = info['moneda_origen']
                         fx_act = 1.0
                         if moneda_act == "USD": fx_act = fx_usd_now
-                        
                         precio_actual_eur = p_now * fx_act
                         precio_mercado_str = f"{p_now:.2f} {moneda_act}"
-                        
                         if info['pmc'] > 0:
                             rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
 
                 tabla_final.append({
-                    "Logo": logo_url,
-                    "Empresa": info['desc'],
-                    "Ticker": t,
-                    "Acciones": info['acciones'],
-                    "PMC": info['pmc'],
-                    "Precio Mercado": precio_mercado_str,
-                    "Saldo Invertido": saldo_vivo,
-                    "Bº/P (Cerrado)": info['pnl_cerrado'],
-                    "% Latente": rentabilidad_pct
+                    "Logo": logo_url, "Empresa": info['desc'], "Ticker": t,
+                    "Acciones": info['acciones'], "PMC": info['pmc'],
+                    "Precio Mercado": precio_mercado_str, "Saldo Invertido": saldo_vivo,
+                    "Bº/P (Cerrado)": info['pnl_cerrado'], "% Latente": rentabilidad_pct
                 })
 
     if tabla_final:
         df_show = pd.DataFrame(tabla_final)
         st.subheader(f"📊 Cartera Detallada")
-        st.info("👆 **Haz clic en una fila** para ver el gráfico y el detalle de la acción.")
-
-        # --- TABLA INTERACTIVA (SELECTION MODE) ---
-        # Configuramos para que se pueda seleccionar una fila (single-row)
+        st.info("👆 **Haz clic en una fila** para ver el gráfico interactivo.")
+        
         event = st.dataframe(
             df_show.style.map(lambda v: 'color: green' if v > 0 else 'color: red', subset=['Bº/P (Cerrado)', '% Latente'])
                          .format({'% Latente': "{:.2%}"}),
-            
             column_config={
                 "Logo": st.column_config.ImageColumn("Logo", width="small"),
                 "Empresa": st.column_config.TextColumn("Empresa"),
@@ -445,22 +446,13 @@ else:
                 "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", format="%.2f €"),
                 "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")
             },
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun", # Importante: Recargar al hacer clic
-            selection_mode="single-row"
+            use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row"
         )
         
-        # --- DETECTAR CLIC ---
         if len(event.selection.rows) > 0:
-            # Obtenemos el índice de la fila seleccionada
-            idx_seleccionado = event.selection.rows[0]
-            # Obtenemos el ticker de esa fila
-            ticker_seleccionado = df_show.iloc[idx_seleccionado]["Ticker"]
-            
-            # Guardamos en sesión y recargamos
-            st.session_state.ticker_detalle = ticker_seleccionado
+            idx = event.selection.rows[0]
+            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
             st.rerun()
-
     else:
         st.info("Añade operaciones para ver tu cartera.")
