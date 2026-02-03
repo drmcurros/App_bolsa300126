@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V7.1 (Neto Total)", layout="wide") 
+st.set_page_config(page_title="Gestor V7.2 (Fix Precios)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -54,14 +54,24 @@ def get_stock_data_fmp(ticker):
     except: return None, None
 
 def get_stock_data_yahoo(ticker):
+    """
+    Versión mejorada: Usa fast_info para obtener el precio más reciente
+    sin depender del historial completo.
+    """
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="5d")
-        if not hist.empty:
-            nombre = stock.info.get('longName') or stock.info.get('shortName') or ticker
-            return nombre, hist['Close'].iloc[-1]
-        return None, None
-    except: return None, None
+        # Intentamos fast_info primero (más rápido y fiable)
+        precio = stock.fast_info.last_price
+        nombre = stock.info.get('longName') or stock.info.get('shortName') or ticker
+        if precio: return nombre, precio
+    except: 
+        # Plan C: Historial clásico
+        try:
+            hist = stock.history(period="1d")
+            if not hist.empty:
+                return ticker, hist['Close'].iloc[-1]
+        except: pass
+    return None, None
 
 def guardar_en_airtable(record):
     try:
@@ -194,10 +204,6 @@ if not df.empty:
     total_comisiones = 0.0
     pnl_global_cerrado = 0.0 
 
-    def get_fx(mon):
-        return get_exchange_rate_now(mon, MONEDA_BASE)
-
-    # --- MOTOR DE CÁLCULO ---
     for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
         tipo = row.get('Tipo')
         tick = str(row.get('Ticker', '')).strip()
@@ -244,63 +250,57 @@ if not df.empty:
     saldo_invertido_total = 0 
     fx_usd_now = get_exchange_rate_now("USD", "EUR")
 
-    with st.spinner("Actualizando mercados..."):
+    with st.spinner("Actualizando precios de mercado..."):
         for t, info in cartera.items():
             if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
                 saldo_vivo = info['coste_total_eur']
                 saldo_invertido_total += saldo_vivo
                 
                 rentabilidad_pct = 0.0
+                precio_mercado_str = "0.00" # Para depuración
                 
                 if info['acciones'] > 0.001:
-                    try:
-                        _, p_now = get_stock_data_fmp(t)
-                        if not p_now: _, p_now = get_stock_data_yahoo(t)
+                    # 1. Intentamos FMP
+                    _, p_now = get_stock_data_fmp(t)
+                    
+                    # 2. Intentamos Yahoo (Fast) si falla FMP
+                    if not p_now: 
+                        _, p_now = get_stock_data_yahoo(t)
+                    
+                    if p_now:
+                        moneda_act = info['moneda_origen']
+                        fx_act = 1.0
+                        if moneda_act == "USD": fx_act = fx_usd_now
                         
-                        if p_now:
-                            moneda_act = info['moneda_origen']
-                            fx_act = 1.0
-                            if moneda_act == "USD": fx_act = fx_usd_now
-                            
-                            precio_actual_eur = p_now * fx_act
-                            
-                            if info['pmc'] > 0:
-                                rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
-                    except: pass
+                        precio_actual_eur = p_now * fx_act
+                        precio_mercado_str = f"{p_now:.2f} {moneda_act}" # Guardamos para mostrar
+                        
+                        if info['pmc'] > 0:
+                            rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
+                    else:
+                        precio_mercado_str = "ERROR API"
 
                 tabla_final.append({
                     "Empresa": info['desc'],
                     "Ticker": t,
                     "Acciones": info['acciones'],
                     "PMC": info['pmc'],
+                    "Precio Mercado": precio_mercado_str, # COLUMNA NUEVA PARA CHEQUEAR
                     "Saldo Invertido": saldo_vivo,
                     "Bº/P (Cerrado)": info['pnl_cerrado'],
-                    "% Actual": rentabilidad_pct
+                    "% Latente": rentabilidad_pct
                 })
 
-    # === NUEVA SECCIÓN DE MÉTRICAS (V7.1) ===
-    # Calculamos el Beneficio Neto Total
     beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
 
-    # Filas de métricas
     m1, m2, m3, m4 = st.columns(4)
+    m1.metric("💰 BENEFICIO TOTAL NETO", f"{beneficio_neto_total:,.2f} €", delta="Limpio")
+    m2.metric("Bº/P Trading (Cerrado)", f"{pnl_global_cerrado:,.2f} €")
+    m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €")
+    m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €")
     
-    m1.metric("💰 BENEFICIO TOTAL NETO", f"{beneficio_neto_total:,.2f} €", 
-              delta="Limpio (Trading + Div - Comisiones)", 
-              help="Suma de Trading + Dividendos restando Comisiones")
-    
-    m2.metric("Bº/P Trading (Cerrado)", f"{pnl_global_cerrado:,.2f} €", 
-              help="Solo ganancias/pérdidas por compra-venta")
-    
-    m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €", 
-              delta=None, help="Ingresos pasivos brutos")
-    
-    m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €", 
-              delta="Costes", delta_color="inverse")
-    
-    st.caption(f"**Dinero Invertido (Coste actual de acciones vivas):** {saldo_invertido_total:,.2f} €")
+    st.caption(f"**Dinero Invertido (Coste):** {saldo_invertido_total:,.2f} €")
     st.divider()
-    # ========================================
     
     if tabla_final:
         df_show = pd.DataFrame(tabla_final)
@@ -311,9 +311,10 @@ if not df.empty:
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
             "PMC": st.column_config.NumberColumn("PMC", help="Coste medio", format="%.2f €"),
+            "Precio Mercado": st.column_config.TextColumn("Precio Mercado", help="Cotización actual (Divisa origen)"),
             "Saldo Invertido": st.column_config.NumberColumn("Invertido", help="Coste vivo", format="%.2f €"),
             "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", help="Ganancia Trading", format="%.2f €"),
-            "% Actual": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
+            "% Latente": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
         }
 
         def color_rentabilidad(val):
@@ -321,8 +322,8 @@ if not df.empty:
             return f'color: {color}; font-weight: bold;'
 
         st.dataframe(
-            df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Actual'])
-                         .format({'% Actual': "{:.2%}"}), 
+            df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Latente'])
+                         .format({'% Latente': "{:.2%}"}), 
             column_config=cfg_columnas,
             use_container_width=True, 
             hide_index=True
