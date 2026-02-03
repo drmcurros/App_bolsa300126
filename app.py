@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V7.0 (Rentabilidad %)", layout="wide") 
+st.set_page_config(page_title="Gestor V7.1 (Neto Total)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -34,8 +34,7 @@ def check_password():
         except: st.error("Revisa Secrets")
     return False
 
-# Cacheamos el cambio de divisa para que no tarde mucho si tienes muchas acciones
-@st.cache_data(ttl=300) # Se actualiza cada 5 minutos
+@st.cache_data(ttl=300) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
     if from_curr == to_curr: return 1.0
     try:
@@ -195,11 +194,8 @@ if not df.empty:
     total_comisiones = 0.0
     pnl_global_cerrado = 0.0 
 
-    # Función para obtener FX histórico (para el cálculo de coste)
-    def get_fx_hist(row):
-        # Aquí simplificamos usando el actual, pero idealmente sería el histórico.
-        # Para V7 usamos el actual cacheado para todo el bucle por eficiencia.
-        return get_exchange_rate_now(row.get('Moneda', 'EUR'), MONEDA_BASE)
+    def get_fx(mon):
+        return get_exchange_rate_now(mon, MONEDA_BASE)
 
     # --- MOTOR DE CÁLCULO ---
     for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
@@ -212,7 +208,6 @@ if not df.empty:
         mon = row.get('Moneda', 'EUR')
         comi = float(row.get('Comision', 0))
         
-        # Obtenemos cambio (Simulado a hoy para simplificar V7, o usar histórico si estuviera)
         fx = get_exchange_rate_now(mon, MONEDA_BASE)
         
         dinero_eur = dinero * fx
@@ -247,89 +242,87 @@ if not df.empty:
     # --- TABLA Y VALORACIÓN ONLINE ---
     tabla_final = []
     saldo_invertido_total = 0 
-    
-    # Obtenemos cambio actual USD->EUR una sola vez para la valoración
     fx_usd_now = get_exchange_rate_now("USD", "EUR")
 
-    with st.spinner("Conectando con mercados para valorar cartera actual..."):
+    with st.spinner("Actualizando mercados..."):
         for t, info in cartera.items():
-            
-            # Solo procesamos si hay historial relevante
             if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
                 saldo_vivo = info['coste_total_eur']
                 saldo_invertido_total += saldo_vivo
                 
-                # --- CÁLCULO DE % LATENTE (NUEVO) ---
                 rentabilidad_pct = 0.0
-                precio_actual_eur = 0.0
                 
-                # Solo buscamos precio si tenemos acciones vivas
                 if info['acciones'] > 0.001:
                     try:
-                        # 1. Buscamos precio online (en divisa origen)
                         _, p_now = get_stock_data_fmp(t)
                         if not p_now: _, p_now = get_stock_data_yahoo(t)
                         
                         if p_now:
-                            # 2. Convertimos precio actual a EUR
                             moneda_act = info['moneda_origen']
                             fx_act = 1.0
                             if moneda_act == "USD": fx_act = fx_usd_now
                             
                             precio_actual_eur = p_now * fx_act
                             
-                            # 3. Fórmula Rentabilidad: (Precio Actual - PMC) / PMC
                             if info['pmc'] > 0:
-                                rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc']) # Decimal (0.10 = 10%)
+                                rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
                     except: pass
-                # ------------------------------------
 
                 tabla_final.append({
                     "Empresa": info['desc'],
                     "Ticker": t,
                     "Acciones": info['acciones'],
-                    "PMC": info['pmc'], # Ya está en EUR
+                    "PMC": info['pmc'],
                     "Saldo Invertido": saldo_vivo,
                     "Bº/P (Cerrado)": info['pnl_cerrado'],
-                    "% Actual": rentabilidad_pct # Nuevo campo
+                    "% Actual": rentabilidad_pct
                 })
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Dinero Invertido (Coste)", f"{saldo_invertido_total:,.2f} €", help="Dinero desembolsado en acciones vivas")
-    c2.metric("Bº/P Realizado (Ya en bolsillo)", f"{pnl_global_cerrado:,.2f} €", delta="Cerrado")
-    c3.metric("Dividendos", f"{total_dividendos:,.2f} €")
-    c4.metric("Comisiones", f"{total_comisiones:,.2f} €")
+    # === NUEVA SECCIÓN DE MÉTRICAS (V7.1) ===
+    # Calculamos el Beneficio Neto Total
+    beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
+
+    # Filas de métricas
+    m1, m2, m3, m4 = st.columns(4)
     
+    m1.metric("💰 BENEFICIO TOTAL NETO", f"{beneficio_neto_total:,.2f} €", 
+              delta="Limpio (Trading + Div - Comisiones)", 
+              help="Suma de Trading + Dividendos restando Comisiones")
+    
+    m2.metric("Bº/P Trading (Cerrado)", f"{pnl_global_cerrado:,.2f} €", 
+              help="Solo ganancias/pérdidas por compra-venta")
+    
+    m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €", 
+              delta=None, help="Ingresos pasivos brutos")
+    
+    m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €", 
+              delta="Costes", delta_color="inverse")
+    
+    st.caption(f"**Dinero Invertido (Coste actual de acciones vivas):** {saldo_invertido_total:,.2f} €")
     st.divider()
+    # ========================================
     
     if tabla_final:
         df_show = pd.DataFrame(tabla_final)
-        st.subheader(f"📊 Rentabilidad {año_seleccionado}")
+        st.subheader(f"📊 Detalle por Acción ({año_seleccionado})")
         
         cfg_columnas = {
             "Empresa": st.column_config.TextColumn("Empresa"),
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
-            "PMC": st.column_config.NumberColumn("PMC (Medio)", help="Tu coste medio en €", format="%.2f €"),
-            "Saldo Invertido": st.column_config.NumberColumn("Invertido (€)", help="Coste total vivo", format="%.2f €"),
-            "Bº/P (Cerrado)": st.column_config.NumberColumn("Bº/P (Cerrado)", help="Ganancia de ventas pasadas", format="%.2f €"),
-            # NUEVA COLUMNA CON BARRA Y COLOR
-            "% Actual": st.column_config.NumberColumn(
-                "% Latente",
-                help="Rentabilidad si vendieras AHORA mismo (Precio Actual vs PMC)",
-                format="%.2f %%"
-            )
+            "PMC": st.column_config.NumberColumn("PMC", help="Coste medio", format="%.2f €"),
+            "Saldo Invertido": st.column_config.NumberColumn("Invertido", help="Coste vivo", format="%.2f €"),
+            "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", help="Ganancia Trading", format="%.2f €"),
+            "% Actual": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
         }
 
-        # Estilo para Bº Cerrado (Texto) y % Actual (Texto también, para no sobrecargar)
-        # Podríamos usar ProgressColumn para % Actual, pero el color rojo/verde es más claro en finanzas.
         def color_rentabilidad(val):
             color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
             return f'color: {color}; font-weight: bold;'
 
         st.dataframe(
             df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Actual'])
-                         .format({'% Actual': "{:.2%}"}), # Formato porcentaje visual pandas
+                         .format({'% Actual': "{:.2%}"}), 
             column_config=cfg_columnas,
             use_container_width=True, 
             hide_index=True
