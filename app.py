@@ -6,7 +6,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor por Años", layout="wide") 
+st.set_page_config(page_title="Gestor Temporal", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- INICIALIZAR ESTADO ---
@@ -63,7 +63,7 @@ def guardar_en_airtable(record):
         api = Api(st.secrets["airtable"]["api_token"])
         table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
         table.create(record)
-        st.success(f"✅ Guardado: {record['Ticker']}")
+        st.success(f"✅ Guardado: {record['Ticker']} ({record['Fecha']})")
         st.session_state.pending_data = None
         st.rerun()
     except Exception as e:
@@ -77,19 +77,18 @@ try:
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera (Histórica)")
+st.title("💼 Mi Cartera")
 
-# --- CARGA DE DATOS INICIAL ---
+# --- CARGA DE DATOS ---
 try: data = table.all()
 except: data = []
 
 df = pd.DataFrame()
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
-    # Procesar fechas al principio para poder filtrar
     if 'Fecha' in df.columns:
         df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
-        df['Año'] = df['Fecha_dt'].dt.year # Extraemos el año
+        df['Año'] = df['Fecha_dt'].dt.year 
         df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M').fillna("")
     else:
         df['Año'] = datetime.now().year
@@ -98,16 +97,14 @@ if data:
 with st.sidebar:
     st.header("Registrar Movimiento")
     
-    # === SELECCIÓN DE AÑO (NUEVO) ===
+    # Filtro Año
     st.divider()
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
         lista_años += list(años_disponibles)
-    
     año_seleccionado = st.selectbox("📅 Filtrar Vista por Año:", lista_años)
     st.divider()
-    # ================================
 
     if st.session_state.pending_data is None:
         with st.form("trade_form"):
@@ -119,6 +116,15 @@ with st.sidebar:
             dinero_total = col_dinero.number_input("Importe Total", min_value=0.0, step=10.0)
             precio_manual = col_precio.number_input("Precio (Opcional)", min_value=0.0, format="%.2f")
             comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
+            
+            # === CAMBIO AQUÍ: FECHA MANUAL RECUPERADA ===
+            st.markdown("---")
+            st.write("📆 **Fecha de la Operación:**")
+            c_date, c_time = st.columns(2)
+            # Por defecto coge "hoy" y "ahora"
+            fecha_input = c_date.date_input("Día", value=datetime.now())
+            hora_input = c_time.time_input("Hora", value=datetime.now())
+            # ============================================
             
             submitted = st.form_submit_button("🔍 Verificar y Guardar")
 
@@ -136,7 +142,9 @@ with st.sidebar:
                     if precio_manual > 0: precio_final = precio_manual
                     if not precio_final: precio_final = 0.0
 
-                    fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
+                    # COMBINAMOS FECHA Y HORA SELECCIONADAS
+                    dt_final = datetime.combine(fecha_input, hora_input)
+                    fecha_bonita = dt_final.strftime("%Y/%m/%d %H:%M")
                     
                     datos = {
                         "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
@@ -156,19 +164,16 @@ with st.sidebar:
             st.session_state.pending_data = None
             st.rerun()
 
-# --- FILTRADO Y CÁLCULOS ---
+# --- VISOR ---
 
 if not df.empty:
-    
-    # 1. APLICAMOS EL FILTRO DE AÑO
     df_filtrado = df.copy()
     if año_seleccionado != "Todos los años":
         df_filtrado = df[df['Año'] == int(año_seleccionado)]
-        st.info(f"Mostrando movimientos y resultados del año: {año_seleccionado}")
+        st.info(f"Viendo datos de: {año_seleccionado}")
     else:
-        st.info("Mostrando acumulado histórico total.")
+        st.info("Viendo acumulado histórico total.")
 
-    # Limpieza de números
     for col in ["Cantidad", "Precio", "Comision"]:
         df_filtrado[col] = pd.to_numeric(df_filtrado.get(col, 0.0), errors='coerce').fillna(0.0)
     
@@ -176,7 +181,6 @@ if not df.empty:
     total_divis_eur = 0
     total_comis_eur = 0
     
-    # Caché de divisas
     fx_cache = {}
     def get_fx_cached(moneda):
         if moneda == MONEDA_BASE: return 1.0
@@ -184,7 +188,6 @@ if not df.empty:
             fx_cache[moneda] = get_exchange_rate(moneda, MONEDA_BASE)
         return fx_cache[moneda]
 
-    # Iteramos solo sobre los datos filtrados
     for i, row in df_filtrado.iterrows():
         tipo = row.get('Tipo')
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
@@ -213,60 +216,41 @@ if not df.empty:
         elif tipo == "Venta":
             if tick in cartera:
                 cartera[tick]['acciones'] -= num_acciones
-                # Si es parcial, ajustamos
                 if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
                 cartera[tick]['saldo_neto_eur'] -= dinero_eur
                 
         elif tipo == "Dividendo":
             total_divis_eur += dinero_eur
 
-    # --- VISUALIZACIÓN ---
-    
+    # --- RESULTADOS ---
     saldo_total_cartera = 0
     tabla_final = []
     
     for t, info in cartera.items():
-        # En la vista anual, mostramos la empresa si ha habido movimiento de dinero
-        # aunque el saldo de acciones sea 0 (ej. compré y vendí todo este año)
         if abs(info['saldo_neto_eur']) > 0.01 or info['acciones'] > 0.001:
             saldo_vivo = info['saldo_neto_eur']
             saldo_total_cartera += saldo_vivo
-            
             tabla_final.append({
-                "Empresa": info['desc'],
-                "Ticker": t,
-                # En vista anual: Acciones compradas (netas) este año
-                # En vista total: Acciones vivas actuales
-                "Acciones (Movimiento)": f"{info['acciones']:.4f}", 
+                "Empresa": info['desc'], "Ticker": t,
+                "Acciones": f"{info['acciones']:.4f}", 
                 "Saldo Invertido (€)": saldo_vivo
             })
 
-    # BLOQUE DE MÉTRICAS
     c1, c2, c3 = st.columns(3)
-    
-    label_saldo = "Saldo Neto (Flujo)" if año_seleccionado != "Todos los años" else "Dinero en Cartera"
-    help_text = "Dinero invertido menos retirado en este periodo."
-    
-    c1.metric(label_saldo, f"{saldo_total_cartera:,.2f} €", help=help_text)
+    c1.metric("Dinero Neto", f"{saldo_total_cartera:,.2f} €")
     c2.metric("Dividendos", f"{total_divis_eur:,.2f} €")
     c3.metric("Comisiones", f"{total_comis_eur:,.2f} €")
     
     st.divider()
     
     if tabla_final:
-        st.subheader(f"📊 Detalle del periodo: {año_seleccionado}")
-        st.dataframe(
-            pd.DataFrame(tabla_final).style.format({"Saldo Invertido (€)": "{:.2f} €"}), 
-            use_container_width=True, hide_index=True
-        )
-    else:
-        st.info(f"No hubo movimientos en {año_seleccionado}.")
+        st.subheader(f"📊 Detalle {año_seleccionado}")
+        st.dataframe(pd.DataFrame(tabla_final).style.format({"Saldo Invertido (€)": "{:.2f} €"}), use_container_width=True, hide_index=True)
     
     with st.expander("Historial Filtrado"):
         cols = [c for c in ['Fecha_str','Tipo','Descripcion','Ticker','Cantidad','Precio','Moneda'] if c in df_filtrado.columns]
-        # Renombramos Fecha_str a Fecha para que se vea bonito
         df_show = df_filtrado[cols].rename(columns={'Fecha_str': 'Fecha'})
         st.dataframe(df_show.sort_values(by="Fecha", ascending=False), use_container_width=True)
 
 else:
-    st.info("Conecta Airtable y añade tu primera operación.")
+    st.info("Añade tu primera operación.")
