@@ -5,7 +5,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Cartera Pro", layout="wide") 
+st.set_page_config(page_title="Gestor Cartera Validada", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -48,7 +48,7 @@ with st.sidebar:
     st.header("Registrar Movimiento")
     with st.form("trade_form"):
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
-        ticker = st.text_input("Ticker (ej. AAPL)").upper()
+        ticker = st.text_input("Ticker (ej. AAPL)").upper().strip() # .strip() quita espacios accidentales
         
         desc_manual = st.text_input("Descripción (Opcional)", help="Si lo dejas vacío, se buscará en internet.")
         
@@ -61,21 +61,42 @@ with st.sidebar:
         
         if st.form_submit_button("Guardar Operación"):
             if ticker and dinero_total > 0:
-                # Guardamos fecha actual
-                # Nota: Aunque enviemos esto bonito, Airtable puede cambiarlo al guardar.
-                # La verdadera magia la haremos al LEER los datos abajo.
-                fecha_bonita = datetime.now().isoformat()
                 
-                nombre_final = ticker 
-                if desc_manual:
-                    nombre_final = desc_manual
-                else:
+                # === VALIDACIÓN ESTRICTA (EL PORTERO) ===
+                es_valido = False
+                nombre_encontrado = None
+                
+                with st.spinner(f"Verificando si '{ticker}' existe en bolsa..."):
                     try:
-                        with st.spinner(f"Buscando nombre de {ticker}..."):
-                            info = yf.Ticker(ticker).info
-                            encontrado = info.get('longName') or info.get('shortName')
-                            if encontrado: nombre_final = encontrado
-                    except: pass
+                        stock = yf.Ticker(ticker)
+                        # Pedimos historial de 5 días por si es fin de semana
+                        hist = stock.history(period="5d")
+                        
+                        if not hist.empty:
+                            es_valido = True
+                            # Ya que estamos, intentamos coger el nombre
+                            info = stock.info
+                            nombre_encontrado = info.get('longName') or info.get('shortName')
+                        else:
+                            es_valido = False
+                    except Exception:
+                        es_valido = False
+                
+                # Si el portero dice NO, paramos todo aquí.
+                if not es_valido:
+                    st.error(f"❌ ERROR CRÍTICO: El Ticker '{ticker}' no existe en Yahoo Finance o está mal escrito. Revisa la ortografía (ej. ¿es GOOG o GOOGL?).")
+                    st.stop() # Detiene la ejecución, no guarda nada.
+                # ========================================
+
+                # Si llegamos aquí, es que el Ticker es bueno. Procedemos.
+                fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
+                
+                # Definimos el nombre final
+                nombre_final = ticker
+                if desc_manual:
+                    nombre_final = desc_manual # Manda el usuario
+                elif nombre_encontrado:
+                    nombre_final = nombre_encontrado # Manda internet
                 
                 record = {
                     "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
@@ -85,27 +106,22 @@ with st.sidebar:
                 }
                 try:
                     table.create(record)
-                    st.success(f"Guardado correctamente: {ticker}")
+                    st.success(f"✅ Guardado correctamente: {nombre_final} ({ticker})")
                     st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+                except Exception as e: st.error(f"Error guardando en Airtable: {e}")
 
-# --- CÁLCULOS Y PROCESAMIENTO ---
+# --- CÁLCULOS ---
 try: data = table.all()
 except: data = []
 
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # === LIMPIEZA VISUAL DE FECHAS (NUEVO) ===
-    # Esto coge cualquier formato raro que mande Airtable y lo pone bonito
+    # Limpieza visual de fechas
     if 'Fecha' in df.columns:
-        # 1. Convertimos a fecha inteligente de Python
         df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
-        # 2. Creamos el formato que te gusta: AAAA/MM/DD HH:MM
         df['Fecha'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M')
-        # 3. Si alguna fecha falla (sale NaT), ponemos un texto vacío para que no rompa
         df['Fecha'] = df['Fecha'].fillna("")
-    # =========================================
 
     for col in ["Cantidad", "Precio", "Comision"]:
         df[col] = df.get(col, 0.0)
@@ -157,7 +173,7 @@ if data:
     val_total = 0
     tabla = []
     
-    with st.spinner("Calculando..."):
+    with st.spinner("Actualizando precios..."):
         for t, info in cartera.items():
             acc = info['acciones']
             if acc > 0.001:
@@ -187,8 +203,6 @@ if data:
     with st.expander("Historial"):
         if not df.empty:
             cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio'] if c in df.columns]
-            # Mostramos la tabla. Como ya hemos arreglado la columna 'Fecha' arriba,
-            # aquí saldrá perfecta automáticamente.
             st.dataframe(
                 df[cols].sort_values(by="Fecha", ascending=False), 
                 use_container_width=True
