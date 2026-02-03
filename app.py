@@ -6,12 +6,14 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor con Ayuda", layout="wide") 
+st.set_page_config(page_title="Gestor Pro V6", layout="wide") 
 MONEDA_BASE = "EUR" 
 
-# --- ESTADO ---
+# --- ESTADO (SESSION STATE) ---
 if "pending_data" not in st.session_state:
     st.session_state.pending_data = None
+if "adding_mode" not in st.session_state:
+    st.session_state.adding_mode = False
 
 # --- FUNCIONES ---
 def check_password():
@@ -64,6 +66,7 @@ def guardar_en_airtable(record):
         table.create(record)
         st.success(f"✅ Guardado: {record['Ticker']}")
         st.session_state.pending_data = None
+        st.session_state.adding_mode = False # Cerramos el formulario al terminar
         st.rerun()
     except Exception as e: st.error(f"Error: {e}")
 
@@ -90,10 +93,11 @@ if data:
         df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M').fillna("")
     else: df['Año'] = datetime.now().year
 
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL (Lógica de Botones) ---
 with st.sidebar:
-    st.header("Nueva Operación")
     
+    # 1. Selector de Año (Siempre visible)
+    st.header("Filtros")
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
@@ -101,55 +105,85 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     st.divider()
 
-    if st.session_state.pending_data is None:
-        with st.form("trade_form"):
-            tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
-            ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
-            desc_manual = st.text_input("Descripción (Opcional)")
-            moneda = st.selectbox("Moneda", ["EUR", "USD"])
-            
-            c1, c2 = st.columns(2)
-            dinero_total = c1.number_input("Importe Total", min_value=0.0, step=10.0)
-            precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
-            comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-            
-            st.markdown("---")
-            st.write("📆 **Fecha:**")
-            cd, ct = st.columns(2)
-            f_in = cd.date_input("Día", value=datetime.now())
-            h_in = ct.time_input("Hora", value=datetime.now())
-            
-            if st.form_submit_button("🔍 Validar y Guardar"):
-                if ticker and dinero_total > 0:
-                    nom, pre = None, 0.0
-                    with st.spinner("Consultando precio..."):
-                        nom, pre = get_stock_data_fmp(ticker)
-                        if not nom: nom, pre = get_stock_data_yahoo(ticker)
-                    
-                    if desc_manual: nom = desc_manual
-                    if not nom: nom = ticker
-                    if precio_manual > 0: pre = precio_manual
-                    if not pre: pre = 0.0
+    # 2. BOTÓN PRINCIPAL: ¿Mostrar o no el formulario?
+    # Si NO estamos añadiendo Y NO hay nada pendiente -> Mostramos el botón de añadir
+    if not st.session_state.adding_mode and st.session_state.pending_data is None:
+        if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
+            st.session_state.adding_mode = True
+            st.rerun()
 
-                    dt_final = datetime.combine(f_in, h_in)
-                    datos = {
-                        "Tipo": tipo, "Ticker": ticker, "Descripcion": nom, 
-                        "Moneda": moneda, "Cantidad": float(dinero_total),
-                        "Precio": float(pre), "Comision": float(comision),
-                        "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
-                    }
-                    if pre > 0: guardar_en_airtable(datos)
-                    else:
-                        st.session_state.pending_data = datos
-                        st.rerun()
-    else:
-        st.warning(f"⚠️ ¿Confirmar '{st.session_state.pending_data['Ticker']}'?")
-        if st.button("✅ Sí"): guardar_en_airtable(st.session_state.pending_data)
-        if st.button("❌ Cancelar"): 
+    # 3. FORMULARIO (Solo si adding_mode es True o hay datos pendientes)
+    if st.session_state.adding_mode or st.session_state.pending_data is not None:
+        
+        st.markdown("### 📝 Datos de la Operación")
+        
+        # Botón para cancelar/cerrar
+        if st.button("❌ Cerrar Formulario", use_container_width=True):
+            st.session_state.adding_mode = False
             st.session_state.pending_data = None
             st.rerun()
 
-# --- CÁLCULO DE RENTABILIDAD ---
+        # Si no hay alerta de confirmación, mostramos el formulario normal
+        if st.session_state.pending_data is None:
+            with st.form("trade_form"):
+                tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
+                ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
+                desc_manual = st.text_input("Descripción (Opcional)")
+                moneda = st.selectbox("Moneda", ["EUR", "USD"])
+                
+                c1, c2 = st.columns(2)
+                dinero_total = c1.number_input("Importe Total", min_value=0.0, step=10.0)
+                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
+                comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
+                
+                st.markdown("---")
+                st.write("📆 **Fecha:**")
+                cd, ct = st.columns(2)
+                f_in = cd.date_input("Día", value=datetime.now())
+                h_in = ct.time_input("Hora", value=datetime.now())
+                
+                if st.form_submit_button("🔍 Validar y Guardar"):
+                    if ticker and dinero_total > 0:
+                        nom, pre = None, 0.0
+                        with st.spinner("Consultando precio..."):
+                            nom, pre = get_stock_data_fmp(ticker)
+                            if not nom: nom, pre = get_stock_data_yahoo(ticker)
+                        
+                        if desc_manual: nom = desc_manual
+                        if not nom: nom = ticker
+                        if precio_manual > 0: pre = precio_manual
+                        if not pre: pre = 0.0
+
+                        dt_final = datetime.combine(f_in, h_in)
+                        datos = {
+                            "Tipo": tipo, "Ticker": ticker, "Descripcion": nom, 
+                            "Moneda": moneda, "Cantidad": float(dinero_total),
+                            "Precio": float(pre), "Comision": float(comision),
+                            "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
+                        }
+                        
+                        # Si encontramos precio, guardamos y cerramos
+                        if pre > 0: 
+                            guardar_en_airtable(datos)
+                        else:
+                            # Si no, pasamos a modo confirmación
+                            st.session_state.pending_data = datos
+                            st.rerun()
+        
+        # Si HAY datos pendientes (Modo Confirmación), mostramos la alerta en lugar del form
+        else:
+            st.warning(f"⚠️ **ALERTA:** No encuentro precio/nombre para **'{st.session_state.pending_data['Ticker']}'**.")
+            st.write("¿Quieres guardarlo de todas formas con precio 0 o revisarlo?")
+            
+            c_si, c_no = st.columns(2)
+            if c_si.button("✅ Guardar"): 
+                guardar_en_airtable(st.session_state.pending_data)
+            
+            if c_no.button("❌ Revisar"): 
+                st.session_state.pending_data = None
+                st.rerun()
+
+# --- CÁLCULO ---
 if not df.empty:
     df_filtrado = df.copy()
     if año_seleccionado != "Todos los años":
@@ -162,9 +196,9 @@ if not df.empty:
         df_filtrado[col] = pd.to_numeric(df_filtrado.get(col, 0.0), errors='coerce').fillna(0.0)
     
     cartera = {}
-    total_divis = 0
-    total_comis = 0
-    pnl_global_cerrado = 0 
+    total_dividendos = 0.0 
+    total_comisiones = 0.0
+    pnl_global_cerrado = 0.0 
 
     fx_cache = {}
     def get_fx(mon):
@@ -185,7 +219,7 @@ if not df.empty:
         fx = get_fx(mon)
         dinero_eur = dinero * fx
         acciones_op = dinero / precio 
-        total_comis += (comi * fx)
+        total_comisiones += (comi * fx)
 
         if tick not in cartera:
             cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 'pnl_cerrado': 0.0, 'pmc': 0.0}
@@ -207,9 +241,9 @@ if not df.empty:
             if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
 
         elif tipo == "Dividendo":
-            total_divis += dinero_eur
+            total_dividendos += dinero_eur
 
-    # --- TABLA FINAL ---
+    # --- TABLA ---
     tabla_final = []
     saldo_invertido_total = 0 
 
@@ -218,7 +252,6 @@ if not df.empty:
             saldo_vivo = info['coste_total_eur']
             saldo_invertido_total += saldo_vivo
             
-            # Formato numérico puro para el dataframe (el formato € se da en la config)
             tabla_final.append({
                 "Empresa": info['desc'],
                 "Ticker": t,
@@ -230,10 +263,9 @@ if not df.empty:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Dinero en Juego", f"{saldo_invertido_total:,.2f} €", help="Coste de acciones que aún tienes")
-    c2.metric("Bº/Pérdida Realizado", f"{pnl_global_cerrado:,.2f} €", 
-              delta="Ganancia Neta" if pnl_global_cerrado > 0 else "Pérdida Neta")
-    c3.metric("Dividendos", f"{total_divis:,.2f} €")
-    c4.metric("Comisiones", f"{total_comis:,.2f} €")
+    c2.metric("Bº/Pérdida Realizado", f"{pnl_global_cerrado:,.2f} €", delta="Ganancia Neta" if pnl_global_cerrado > 0 else "Pérdida Neta")
+    c3.metric("Dividendos", f"{total_dividendos:,.2f} €")
+    c4.metric("Comisiones", f"{total_comisiones:,.2f} €")
     
     st.divider()
     
@@ -241,52 +273,14 @@ if not df.empty:
         df_show = pd.DataFrame(tabla_final)
         st.subheader(f"📊 Rentabilidad {año_seleccionado}")
         
-        # --- AQUÍ ESTÁ LA MAGIA DE LA CONFIGURACIÓN ---
         st.dataframe(
-            # 1. Aplicamos colores con Pandas (Estilo)
             df_show.style.map(
                 lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
                 subset=['Bº/P (Cerrado)']
             ),
-            
-            # 2. Aplicamos Textos de Ayuda y Formatos con Streamlit (Config)
             column_config={
-                "Empresa": st.column_config.TextColumn(
-                    "Empresa", 
-                    help="Nombre comercial de la compañía."
-                ),
-                "Ticker": st.column_config.TextColumn(
-                    "Ticker", 
-                    help="Símbolo único de bolsa (ej. AAPL)."
-                ),
-                "Acciones": st.column_config.NumberColumn(
-                    "Acciones", 
-                    help="Cantidad de acciones que posees actualmente.",
-                    format="%.4f"
-                ),
-                "PMC": st.column_config.NumberColumn(
-                    "PMC (Medio)", 
-                    help="Precio Medio de Compra. Tu coste promedio por acción.",
-                    format="%.2f"
-                ),
-                "Saldo Invertido": st.column_config.NumberColumn(
-                    "Saldo Invertido (€)", 
-                    help="Dinero total que te ha costado comprar las acciones que tienes vivas.",
-                    format="%.2f €"
-                ),
-                "Bº/P (Cerrado)": st.column_config.NumberColumn(
-                    "Bº/P (Cerrado)", 
-                    help="Beneficio o Pérdida de las ventas ya realizadas. (Venta - PMC).",
-                    format="%.2f €"
-                ),
-            },
-            use_container_width=True, 
-            hide_index=True
-        )
-    
-    with st.expander("📝 Ver Histórico"):
-        cols = [c for c in ['Fecha_str','Tipo','Ticker','Cantidad','Precio','Moneda'] if c in df_filtrado.columns]
-        st.dataframe(df_filtrado[cols].sort_values(by="Fecha_str", ascending=False), use_container_width=True)
-
-else:
-    st.info("Sin datos.")
+                "Empresa": st.column_config.TextColumn("Empresa", help="Nombre comercial."),
+                "Ticker": st.column_config.TextColumn("Ticker", help="Símbolo bursátil."),
+                "Acciones": st.column_config.NumberColumn("Acciones", help="Títulos en posesión.", format="%.4f"),
+                "PMC": st.column_config.NumberColumn("PMC (Medio)", help="Precio Medio de Compra.", format="%.2f"),
+                "Saldo Invertido": st.column_config.
