@@ -162,4 +162,131 @@ if not df.empty:
         df_filtrado[col] = pd.to_numeric(df_filtrado.get(col, 0.0), errors='coerce').fillna(0.0)
     
     cartera = {}
-    total_div
+    total_divis = 0
+    total_comis = 0
+    pnl_global_cerrado = 0 
+
+    fx_cache = {}
+    def get_fx(mon):
+        if mon == MONEDA_BASE: return 1.0
+        if mon not in fx_cache: fx_cache[mon] = get_exchange_rate(mon, MONEDA_BASE)
+        return fx_cache[mon]
+
+    for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
+        tipo = row.get('Tipo')
+        tick = str(row.get('Ticker', '')).strip()
+        desc = str(row.get('Descripcion', tick)).strip() or tick
+        dinero = float(row.get('Cantidad', 0))
+        precio = float(row.get('Precio', 1))
+        if precio <= 0: precio = 1
+        mon = row.get('Moneda', 'EUR')
+        comi = float(row.get('Comision', 0))
+        
+        fx = get_fx(mon)
+        dinero_eur = dinero * fx
+        acciones_op = dinero / precio 
+        total_comis += (comi * fx)
+
+        if tick not in cartera:
+            cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 'pnl_cerrado': 0.0, 'pmc': 0.0}
+
+        if tipo == "Compra":
+            cartera[tick]['acciones'] += acciones_op
+            cartera[tick]['coste_total_eur'] += dinero_eur
+            if cartera[tick]['acciones'] > 0:
+                cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
+            if len(desc) > len(cartera[tick]['desc']): cartera[tick]['desc'] = desc
+
+        elif tipo == "Venta":
+            coste_proporcional = acciones_op * cartera[tick]['pmc']
+            beneficio_operacion = dinero_eur - coste_proporcional
+            cartera[tick]['pnl_cerrado'] += beneficio_operacion
+            pnl_global_cerrado += beneficio_operacion
+            cartera[tick]['acciones'] -= acciones_op
+            cartera[tick]['coste_total_eur'] -= coste_proporcional 
+            if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
+
+        elif tipo == "Dividendo":
+            total_divis += dinero_eur
+
+    # --- TABLA FINAL ---
+    tabla_final = []
+    saldo_invertido_total = 0 
+
+    for t, info in cartera.items():
+        if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
+            saldo_vivo = info['coste_total_eur']
+            saldo_invertido_total += saldo_vivo
+            
+            # Formato numérico puro para el dataframe (el formato € se da en la config)
+            tabla_final.append({
+                "Empresa": info['desc'],
+                "Ticker": t,
+                "Acciones": info['acciones'],
+                "PMC": info['pmc'] / get_fx(df_filtrado[df_filtrado['Ticker']==t]['Moneda'].iloc[-1]),
+                "Saldo Invertido": saldo_vivo,
+                "Bº/P (Cerrado)": info['pnl_cerrado']
+            })
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Dinero en Juego", f"{saldo_invertido_total:,.2f} €", help="Coste de acciones que aún tienes")
+    c2.metric("Bº/Pérdida Realizado", f"{pnl_global_cerrado:,.2f} €", 
+              delta="Ganancia Neta" if pnl_global_cerrado > 0 else "Pérdida Neta")
+    c3.metric("Dividendos", f"{total_divis:,.2f} €")
+    c4.metric("Comisiones", f"{total_comis:,.2f} €")
+    
+    st.divider()
+    
+    if tabla_final:
+        df_show = pd.DataFrame(tabla_final)
+        st.subheader(f"📊 Rentabilidad {año_seleccionado}")
+        
+        # --- AQUÍ ESTÁ LA MAGIA DE LA CONFIGURACIÓN ---
+        st.dataframe(
+            # 1. Aplicamos colores con Pandas (Estilo)
+            df_show.style.map(
+                lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
+                subset=['Bº/P (Cerrado)']
+            ),
+            
+            # 2. Aplicamos Textos de Ayuda y Formatos con Streamlit (Config)
+            column_config={
+                "Empresa": st.column_config.TextColumn(
+                    "Empresa", 
+                    help="Nombre comercial de la compañía."
+                ),
+                "Ticker": st.column_config.TextColumn(
+                    "Ticker", 
+                    help="Símbolo único de bolsa (ej. AAPL)."
+                ),
+                "Acciones": st.column_config.NumberColumn(
+                    "Acciones", 
+                    help="Cantidad de acciones que posees actualmente.",
+                    format="%.4f"
+                ),
+                "PMC": st.column_config.NumberColumn(
+                    "PMC (Medio)", 
+                    help="Precio Medio de Compra. Tu coste promedio por acción.",
+                    format="%.2f"
+                ),
+                "Saldo Invertido": st.column_config.NumberColumn(
+                    "Saldo Invertido (€)", 
+                    help="Dinero total que te ha costado comprar las acciones que tienes vivas.",
+                    format="%.2f €"
+                ),
+                "Bº/P (Cerrado)": st.column_config.NumberColumn(
+                    "Bº/P (Cerrado)", 
+                    help="Beneficio o Pérdida de las ventas ya realizadas. (Venta - PMC).",
+                    format="%.2f €"
+                ),
+            },
+            use_container_width=True, 
+            hide_index=True
+        )
+    
+    with st.expander("📝 Ver Histórico"):
+        cols = [c for c in ['Fecha_str','Tipo','Ticker','Cantidad','Precio','Moneda'] if c in df_filtrado.columns]
+        st.dataframe(df_filtrado[cols].sort_values(by="Fecha_str", ascending=False), use_container_width=True)
+
+else:
+    st.info("Sin datos.")
