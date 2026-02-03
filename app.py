@@ -3,132 +3,160 @@ import pandas as pd
 import yfinance as yf
 from pyairtable import Api
 
-# ------------------------------------------------------
-# 1. CONFIGURACIÓN Y LOGIN
-# ------------------------------------------------------
-st.set_page_config(page_title="Mi Cartera Airtable", layout="centered") 
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Mi Patrimonio Pro", layout="wide") 
+MONEDA_BASE = "EUR"  # La moneda en la que quieres ver tu total
 
+# --- FUNCIONES AUXILIARES ---
 def check_password():
-    if st.session_state.get('password_correct', False):
-        return True
-
-    st.header("🔒 Acceso Restringido")
-    col1, col2 = st.columns(2)
-    with col1: user_input = st.text_input("Usuario")
-    with col2: pass_input = st.text_input("Contraseña", type="password")
-
+    if st.session_state.get('password_correct', False): return True
+    st.header("🔒 Login")
+    c1, c2 = st.columns(2)
+    user = c1.text_input("Usuario")
+    pw = c2.text_input("Contraseña", type="password")
     if st.button("Entrar"):
-        try:
-            # Verificamos credenciales
-            if (user_input == st.secrets["credenciales"]["usuario"] and 
-                pass_input == st.secrets["credenciales"]["password"]):
-                st.session_state['password_correct'] = True
-                st.rerun()
-            else:
-                st.error("Datos incorrectos")
-        except Exception:
-            st.error("⚠️ Configura los [secrets] en Streamlit primero.")
-            
+        if user == st.secrets["credenciales"]["usuario"] and pw == st.secrets["credenciales"]["password"]:
+            st.session_state['password_correct'] = True
+            st.rerun()
+        else: st.error("Incorrecto")
     return False
 
-if not check_password():
-    st.stop()
+def get_exchange_rate(from_currency, to_currency):
+    """Devuelve el tipo de cambio actual (ej. de USD a EUR)."""
+    if from_currency == to_currency: return 1.0
+    try:
+        # Yahoo usa el formato "EUR=X" para USD->EUR
+        pair = f"{to_currency}=X" if from_currency == "USD" else f"{from_currency}{to_currency}=X"
+        ticker = yf.Ticker(pair)
+        hist = ticker.history(period="1d")
+        return hist['Close'].iloc[-1]
+    except:
+        return 1.0 # Si falla, asumimos 1 a 1 para no romper la app
 
-# ======================================================
-# CONEXIÓN CON AIRTABLE
-# ======================================================
+# --- INICIO ---
+if not check_password(): st.stop()
+
+# Conexión Airtable
 try:
-    # Conectamos usando las claves de Secrets
     api = Api(st.secrets["airtable"]["api_token"])
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
-except Exception as e:
-    st.error("Error conectando con Airtable. Revisa tus Secrets.")
-    st.stop()
+except: st.stop()
 
-st.title("📱 Mi Cartera (Airtable)")
+st.title(f"🌍 Mi Patrimonio ({MONEDA_BASE})")
 
-# Botón salir
+# --- BARRA LATERAL: NUEVA OPERACIÓN ---
 with st.sidebar:
-    st.write(f"Usuario: {st.secrets['credenciales']['usuario']}")
-    if st.button("Cerrar Sesión"):
-        st.session_state['password_correct'] = False
-        st.rerun()
-
-# ------------------------------------------------------
-# 2. REGISTRAR OPERACIONES
-# ------------------------------------------------------
-with st.expander("➕ Registrar Nueva Compra", expanded=False):
-    with st.form("buy_form"):
+    st.header("Registrar Operación")
+    with st.form("new_trade"):
+        tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
         ticker = st.text_input("Ticker (ej. AAPL)").upper()
-        cantidad = st.number_input("Cantidad", min_value=1.0, step=1.0)
-        precio = st.number_input("Precio de compra ($)", min_value=0.1)
-        fecha = st.date_input("Fecha") # Airtable prefiere formato YYYY-MM-DD
+        moneda = st.selectbox("Moneda del Activo", ["EUR", "USD"])
         
-        submitted = st.form_submit_button("Guardar")
+        c1, c2 = st.columns(2)
+        cantidad = c1.number_input("Cantidad", min_value=0.0, step=1.0)
+        precio = c2.number_input("Precio/Acción", min_value=0.0)
         
-        if submitted and ticker:
-            try:
-                # Enviamos los datos a Airtable
+        c3, c4 = st.columns(2)
+        comision = c3.number_input("Comisión Total", min_value=0.0)
+        fecha = c4.date_input("Fecha")
+        
+        if st.form_submit_button("Guardar"):
+            if ticker:
                 table.create({
-                    "Ticker": ticker,
-                    "Cantidad": int(cantidad),
-                    "Precio": float(precio),
-                    "Fecha": str(fecha)
+                    "Tipo": tipo, "Ticker": ticker, "Moneda": moneda,
+                    "Cantidad": float(cantidad), "Precio": float(precio),
+                    "Comision": float(comision), "Fecha": str(fecha)
                 })
-                st.success(f"¡Guardado en la nube! {ticker}")
+                st.success("Guardado ✅")
                 st.rerun()
-            except Exception as e:
-                st.error(f"Error escribiendo en Airtable: {e}")
 
-# ------------------------------------------------------
-# 3. VISUALIZAR CARTERA
-# ------------------------------------------------------
-try:
-    # Descargamos todos los datos de Airtable
-    data = table.all()
+# --- CÁLCULOS (EL CEREBRO) ---
+data = table.all()
+if data:
+    df = pd.DataFrame([x['fields'] for x in data])
     
-    # Convertimos el formato extraño de Airtable a un DataFrame limpio
-    if data:
-        df_raw = [x['fields'] for x in data] # Extraemos solo los campos
-        df_cartera = pd.DataFrame(df_raw)
-        
-        # Aseguramos que existan las columnas aunque estén vacías
-        required_cols = ["Ticker", "Cantidad", "Precio"]
-        for col in required_cols:
-            if col not in df_cartera.columns:
-                df_cartera[col] = 0
+    # Asegurar columnas numéricas
+    for col in ["Cantidad", "Precio", "Comision"]:
+        df[col] = df.get(col, 0).fillna(0)
 
-        st.divider()
-        st.subheader("💰 Mi Portafolio en Vivo")
+    # Variables para totales
+    cartera = {} # Diccionario para guardar acciones vivas: {AAPL: 10, TSLA: 5}
+    total_dividendos = 0
+    total_comisiones = 0
+    
+    # Procesar histórico (FIFO lógico simplificado)
+    for i, row in df.iterrows():
+        t = row.get('Ticker')
+        tipo = row.get('Tipo')
+        cant = row.get('Cantidad', 0)
+        comi = row.get('Comision', 0)
+        moneda_origen = row.get('Moneda', 'EUR')
         
-        total_valor = 0
+        # Obtenemos cambio para sumar comisiones/dividendos en EUR
+        fx = get_exchange_rate(moneda_origen, MONEDA_BASE)
         
-        for index, row in df_cartera.iterrows():
-            simbolo = row.get('Ticker') # .get evita errores si la celda está vacía
-            cant = row.get('Cantidad', 0)
+        total_comisiones += (comi * fx)
+        
+        if tipo == "Compra":
+            cartera[t] = cartera.get(t, {'cant': 0, 'moneda': moneda_origen})
+            cartera[t]['cant'] += cant
+            cartera[t]['moneda'] = moneda_origen # Guardamos moneda del activo
             
-            if not simbolo: continue
+        elif tipo == "Venta":
+            if t in cartera:
+                cartera[t]['cant'] -= cant
+                
+        elif tipo == "Dividendo":
+            # Precio aquí suele ser el total cobrado o por acción? 
+            # Asumiremos Precio = Total Cobrado bruto en este form simple
+            total_dividendos += (row.get('Precio', 0) * fx)
+
+    # --- VISUALIZACIÓN ---
+    
+    st.subheader("📊 Resumen Global")
+    col1, col2, col3 = st.columns(3)
+    
+    valor_cartera_eur = 0
+    lista_activos = []
+
+    # Calcular valor actual de acciones vivas
+    with st.spinner("Actualizando precios de mercado..."):
+        for tick, info in cartera.items():
+            cantidad_viva = info['cant']
             
-            try:
-                stock = yf.Ticker(simbolo)
-                hist = stock.history(period="1d")
-                if not hist.empty:
-                    precio_actual = hist['Close'].iloc[-1]
-                    valor_posicion = precio_actual * cant
-                    total_valor += valor_posicion
+            if cantidad_viva > 0.01: # Solo mostramos si tenemos algo
+                moneda_activo = info['moneda']
+                
+                # Buscar precio actual
+                try:
+                    stock = yf.Ticker(tick)
+                    precio_actual = stock.history(period="1d")['Close'].iloc[-1]
                     
-                    st.info(f"**{simbolo}**: {cant} acc. a ${precio_actual:.2f} | Total: ${valor_posicion:.2f}")
-            except Exception:
-                pass
-        
-        st.metric(label="Valor Total Cartera", value=f"${total_valor:,.2f}")
-        
-        with st.expander("Ver tabla bruta"):
-            st.dataframe(df_cartera)
-            
-    else:
-        st.info("Tu base de datos en Airtable está vacía.")
+                    # Convertir a Euros
+                    fx_rate = get_exchange_rate(moneda_activo, MONEDA_BASE)
+                    valor_posicion_eur = cantidad_viva * precio_actual * fx_rate
+                    
+                    valor_cartera_eur += valor_posicion_eur
+                    
+                    lista_activos.append({
+                        "Ticker": tick,
+                        "Acciones": cantidad_viva,
+                        "Precio": f"{precio_actual:.2f} {moneda_activo}",
+                        "Valor (EUR)": round(valor_posicion_eur, 2)
+                    })
+                except:
+                    pass
 
-except Exception as e:
-    st.warning("Error leyendo datos.")
-    st.write(e)
+    col1.metric("Valor Cartera", f"{valor_cartera_eur:,.2f} €")
+    col2.metric("Dividendos Cobrados", f"{total_dividendos:,.2f} €")
+    col3.metric("Comisiones Pagadas", f"{total_comisiones:,.2f} €", delta_color="inverse")
+    
+    st.divider()
+    st.subheader("🔍 Desglose de Activos")
+    st.dataframe(pd.DataFrame(lista_activos), use_container_width=True)
+    
+    with st.expander("Ver Histórico de Operaciones"):
+        st.dataframe(df.sort_values(by="Fecha", ascending=False))
+
+else:
+    st.info("Añade tu primera operación en la barra lateral.")
