@@ -330,4 +330,46 @@ if not df.empty:
     m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €", delta=None)
     
     # 4. COMISIONES (Rojo inverso para indicar coste)
-    m4.metric("Comisiones Totales", f"-{total_comisiones:
+    m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
+    
+    st.caption(f"**Dinero Invertido (Coste actual de acciones vivas):** {saldo_invertido_total:,.2f} €")
+    st.divider()
+    
+    if tabla_final:
+        df_show = pd.DataFrame(tabla_final)
+        st.subheader(f"📊 Detalle por Acción ({año_seleccionado})")
+        
+        cfg_columnas = {
+            "Logo": st.column_config.ImageColumn("Logo", width="small"),
+            "Empresa": st.column_config.TextColumn("Empresa"),
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
+            "PMC": st.column_config.NumberColumn("PMC", help="Coste medio", format="%.2f €"),
+            "Precio Mercado": st.column_config.TextColumn("Precio Mercado"),
+            "Saldo Invertido": st.column_config.NumberColumn("Invertido", help="Coste vivo", format="%.2f €"),
+            "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", help="Ganancia Trading", format="%.2f €"),
+            "% Latente": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
+        }
+
+        def color_rentabilidad(val):
+            color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
+            return f'color: {color}; font-weight: bold;'
+
+        st.dataframe(
+            df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Latente'])
+                         .format({'% Latente': "{:.2%}"}), 
+            column_config=cfg_columnas,
+            use_container_width=True, 
+            hide_index=True
+        )
+    
+    with st.expander("📝 Ver Histórico"):
+        cols = [c for c in ['Fecha_str','Tipo','Ticker','Cantidad','Precio','Moneda'] if c in df_filtrado.columns]
+        st.dataframe(df_filtrado[cols].sort_values(by="Fecha_str", ascending=False), use_container_width=True)
+
+    with st.expander("🔍 DEBUG: Datos Crudos"):
+        st.write(f"Total filas: {len(df)}")
+        st.dataframe(df.head())
+
+else:
+    st.info("Sin datos. Añade tu primera operación con el botón superior.")
