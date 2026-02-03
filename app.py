@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V8.2 (Métricas Pro)", layout="wide") 
+st.set_page_config(page_title="Gestor V8.3 (% Trading)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -100,7 +100,7 @@ except: data = []
 df = pd.DataFrame()
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
-    df.columns = df.columns.str.strip() # Limpieza de espacios
+    df.columns = df.columns.str.strip() 
 
     if 'Fecha' in df.columns:
         df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
@@ -209,8 +209,8 @@ if not df.empty:
     total_comisiones = 0.0
     pnl_global_cerrado = 0.0 
     
-    # NUEVO: Acumulador de inversión histórica para calcular ROI %
-    total_compras_historicas_eur = 0.0
+    total_compras_historicas_eur = 0.0 # Para ROI Total
+    coste_ventas_total = 0.0 # NUEVO: Para ROI Trading
 
     for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
         tipo = row.get('Tipo', 'Desconocido')
@@ -237,8 +237,6 @@ if not df.empty:
         if tipo == "Compra":
             cartera[tick]['acciones'] += acciones_op
             cartera[tick]['coste_total_eur'] += dinero_eur
-            
-            # Sumamos al histórico de compras para calcular ROI luego
             total_compras_historicas_eur += dinero_eur 
 
             if cartera[tick]['acciones'] > 0:
@@ -247,6 +245,10 @@ if not df.empty:
 
         elif tipo == "Venta":
             coste_proporcional = acciones_op * cartera[tick]['pmc']
+            
+            # Acumulamos el coste de lo vendido para calcular el ROI de Trading
+            coste_ventas_total += coste_proporcional 
+
             beneficio_operacion = dinero_eur - coste_proporcional
             cartera[tick]['pnl_cerrado'] += beneficio_operacion
             pnl_global_cerrado += beneficio_operacion
@@ -299,37 +301,39 @@ if not df.empty:
                     "% Latente": rentabilidad_pct
                 })
 
-    # === CÁLCULOS FINALES DE RENTABILIDAD ===
+    # === CÁLCULOS FINALES ===
     beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
     
-    # Calcular ROI Total % (Beneficio Neto / Total Dinero Invertido Históricamente)
+    # 1. ROI Total % (Sobre todo el dinero movido históricamente)
     roi_total_pct = 0.0
     if total_compras_historicas_eur > 0:
         roi_total_pct = (beneficio_neto_total / total_compras_historicas_eur) * 100
+        
+    # 2. ROI Trading % (Beneficio Venta / Coste Venta)
+    roi_trading_pct = 0.0
+    if coste_ventas_total > 0:
+        roi_trading_pct = (pnl_global_cerrado / coste_ventas_total) * 100
 
-    # MÉTRICAS CON COLOR Y PORCENTAJE
+    # MÉTRICAS
     m1, m2, m3, m4 = st.columns(4)
     
-    # 1. BENEFICIO NETO (Con Color y %)
     m1.metric(
         "💰 BENEFICIO TOTAL NETO", 
         f"{beneficio_neto_total:,.2f} €", 
-        delta=f"{roi_total_pct:+.2f} % (ROI)", # Esto pone el % y el color verde/rojo automáticamente
+        delta=f"{roi_total_pct:+.2f} % (ROI)", 
         help="Beneficio limpio (Trading + Div - Comisiones) respecto al total invertido."
     )
     
-    # 2. TRADING (Con Color)
+    # CAMBIO AQUÍ: Delta ahora es PORCENTAJE
     m2.metric(
         "Bº/P Trading (Cerrado)", 
         f"{pnl_global_cerrado:,.2f} €", 
-        delta=f"{pnl_global_cerrado:,.2f} €", # Repetimos el valor en delta para forzar el color verde/rojo
-        help="Ganancia o pérdida directa por compra-venta de acciones."
+        delta=f"{roi_trading_pct:+.2f} %", # Ahora sale en % y cambia de color solo
+        help="Rentabilidad porcentual de las operaciones cerradas."
     )
     
-    # 3. DIVIDENDOS (Siempre positivo o neutro)
     m3.metric("Dividendos Totales", f"{total_dividendos:,.2f} €", delta=None)
     
-    # 4. COMISIONES (Rojo inverso para indicar coste)
     m4.metric("Comisiones Totales", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
     
     st.caption(f"**Dinero Invertido (Coste actual de acciones vivas):** {saldo_invertido_total:,.2f} €")
