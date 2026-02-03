@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V7.2 (Fix Precios)", layout="wide") 
+st.set_page_config(page_title="Gestor V7.3 (Con Logos)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -34,6 +34,7 @@ def check_password():
         except: st.error("Revisa Secrets")
     return False
 
+# --- CACHÉS ---
 @st.cache_data(ttl=300) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
     if from_curr == to_curr: return 1.0
@@ -41,6 +42,16 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
         pair = f"{to_curr}=X" if from_curr == "USD" else f"{from_curr}{to_curr}=X"
         return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
+
+# NUEVA FUNCIÓN: Obtener Logo con caché larga (24h)
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_logo_url(ticker):
+    try:
+        # Yahoo suele tener el logo en la metadata 'info'
+        url = yf.Ticker(ticker).info.get('logo_url', '')
+        return url
+    except:
+        return "" # Si falla, devuelve vacío para que no rompa
 
 def get_stock_data_fmp(ticker):
     try:
@@ -54,18 +65,12 @@ def get_stock_data_fmp(ticker):
     except: return None, None
 
 def get_stock_data_yahoo(ticker):
-    """
-    Versión mejorada: Usa fast_info para obtener el precio más reciente
-    sin depender del historial completo.
-    """
     try:
         stock = yf.Ticker(ticker)
-        # Intentamos fast_info primero (más rápido y fiable)
         precio = stock.fast_info.last_price
         nombre = stock.info.get('longName') or stock.info.get('shortName') or ticker
         if precio: return nombre, precio
     except: 
-        # Plan C: Historial clásico
         try:
             hist = stock.history(period="1d")
             if not hist.empty:
@@ -250,42 +255,42 @@ if not df.empty:
     saldo_invertido_total = 0 
     fx_usd_now = get_exchange_rate_now("USD", "EUR")
 
-    with st.spinner("Actualizando precios de mercado..."):
+    with st.spinner("Actualizando precios y logos..."):
         for t, info in cartera.items():
             if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
                 saldo_vivo = info['coste_total_eur']
                 saldo_invertido_total += saldo_vivo
                 
                 rentabilidad_pct = 0.0
-                precio_mercado_str = "0.00" # Para depuración
+                precio_mercado_str = "0.00"
+                logo_url = "" # Variable para el logo
                 
                 if info['acciones'] > 0.001:
-                    # 1. Intentamos FMP
-                    _, p_now = get_stock_data_fmp(t)
+                    # 1. OBTENER LOGO (Usamos la función con caché)
+                    logo_url = get_logo_url(t)
                     
-                    # 2. Intentamos Yahoo (Fast) si falla FMP
-                    if not p_now: 
-                        _, p_now = get_stock_data_yahoo(t)
+                    # 2. OBTENER PRECIO
+                    _, p_now = get_stock_data_fmp(t)
+                    if not p_now: _, p_now = get_stock_data_yahoo(t)
                     
                     if p_now:
                         moneda_act = info['moneda_origen']
                         fx_act = 1.0
                         if moneda_act == "USD": fx_act = fx_usd_now
-                        
                         precio_actual_eur = p_now * fx_act
-                        precio_mercado_str = f"{p_now:.2f} {moneda_act}" # Guardamos para mostrar
-                        
+                        precio_mercado_str = f"{p_now:.2f} {moneda_act}"
                         if info['pmc'] > 0:
                             rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
                     else:
                         precio_mercado_str = "ERROR API"
 
                 tabla_final.append({
+                    "Logo": logo_url, # Ponemos el logo primero
                     "Empresa": info['desc'],
                     "Ticker": t,
                     "Acciones": info['acciones'],
                     "PMC": info['pmc'],
-                    "Precio Mercado": precio_mercado_str, # COLUMNA NUEVA PARA CHEQUEAR
+                    "Precio Mercado": precio_mercado_str,
                     "Saldo Invertido": saldo_vivo,
                     "Bº/P (Cerrado)": info['pnl_cerrado'],
                     "% Latente": rentabilidad_pct
@@ -307,11 +312,13 @@ if not df.empty:
         st.subheader(f"📊 Detalle por Acción ({año_seleccionado})")
         
         cfg_columnas = {
+            # CONFIGURACIÓN DE LA COLUMNA DE IMAGEN
+            "Logo": st.column_config.ImageColumn("Logo", width="small", help="Logo corporativo"),
             "Empresa": st.column_config.TextColumn("Empresa"),
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
             "PMC": st.column_config.NumberColumn("PMC", help="Coste medio", format="%.2f €"),
-            "Precio Mercado": st.column_config.TextColumn("Precio Mercado", help="Cotización actual (Divisa origen)"),
+            "Precio Mercado": st.column_config.TextColumn("Precio Mercado"),
             "Saldo Invertido": st.column_config.NumberColumn("Invertido", help="Coste vivo", format="%.2f €"),
             "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", help="Ganancia Trading", format="%.2f €"),
             "% Latente": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
