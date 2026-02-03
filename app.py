@@ -15,23 +15,26 @@ def check_password():
     user = c1.text_input("Usuario")
     pw = c2.text_input("Contraseña", type="password")
     if st.button("Entrar"):
-        if user == st.secrets["credenciales"]["usuario"] and pw == st.secrets["credenciales"]["password"]:
-            st.session_state['password_correct'] = True
-            st.rerun()
-        else: st.error("Incorrecto")
+        try:
+            if user == st.secrets["credenciales"]["usuario"] and pw == st.secrets["credenciales"]["password"]:
+                st.session_state['password_correct'] = True
+                st.rerun()
+            else: st.error("Incorrecto")
+        except: st.error("Revisa tus Secrets")
     return False
 
 def get_exchange_rate(from_currency, to_currency):
     """Devuelve el tipo de cambio actual (ej. de USD a EUR)."""
     if from_currency == to_currency: return 1.0
     try:
-        # Yahoo usa el formato "EUR=X" para USD->EUR
         pair = f"{to_currency}=X" if from_currency == "USD" else f"{from_currency}{to_currency}=X"
         ticker = yf.Ticker(pair)
         hist = ticker.history(period="1d")
-        return hist['Close'].iloc[-1]
+        if not hist.empty:
+            return hist['Close'].iloc[-1]
+        return 1.0
     except:
-        return 1.0 # Si falla, asumimos 1 a 1 para no romper la app
+        return 1.0 
 
 # --- INICIO ---
 if not check_password(): st.stop()
@@ -40,7 +43,9 @@ if not check_password(): st.stop()
 try:
     api = Api(st.secrets["airtable"]["api_token"])
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
-except: st.stop()
+except: 
+    st.error("Error conectando a Airtable. Revisa el ID de la base y el Token.")
+    st.stop()
 
 st.title(f"🌍 Mi Patrimonio ({MONEDA_BASE})")
 
@@ -62,29 +67,41 @@ with st.sidebar:
         
         if st.form_submit_button("Guardar"):
             if ticker:
-                table.create({
-                    "Tipo": tipo, "Ticker": ticker, "Moneda": moneda,
-                    "Cantidad": float(cantidad), "Precio": float(precio),
-                    "Comision": float(comision), "Fecha": str(fecha)
-                })
-                st.success("Guardado ✅")
-                st.rerun()
+                try:
+                    table.create({
+                        "Tipo": tipo, "Ticker": ticker, "Moneda": moneda,
+                        "Cantidad": float(cantidad), "Precio": float(precio),
+                        "Comision": float(comision), "Fecha": str(fecha)
+                    })
+                    st.success("Guardado ✅")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error guardando: {e}")
 
 # --- CÁLCULOS (EL CEREBRO) ---
-data = table.all()
+try:
+    data = table.all()
+except:
+    data = []
+
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # Asegurar columnas numéricas
-    for col in ["Cantidad", "Precio", "Comision"]:
-        df[col] = df.get(col, 0).fillna(0)
+    # --- CORRECCIÓN DEL ERROR AQUÍ ---
+    # Verificamos si las columnas existen. Si no, las creamos con ceros.
+    cols_numericas = ["Cantidad", "Precio", "Comision"]
+    for col in cols_numericas:
+        if col not in df.columns:
+            df[col] = 0.0
+        else:
+            df[col] = df[col].fillna(0.0)
 
     # Variables para totales
-    cartera = {} # Diccionario para guardar acciones vivas: {AAPL: 10, TSLA: 5}
+    cartera = {} 
     total_dividendos = 0
     total_comisiones = 0
     
-    # Procesar histórico (FIFO lógico simplificado)
+    # Procesar histórico
     for i, row in df.iterrows():
         t = row.get('Ticker')
         tipo = row.get('Tipo')
@@ -92,7 +109,7 @@ if data:
         comi = row.get('Comision', 0)
         moneda_origen = row.get('Moneda', 'EUR')
         
-        # Obtenemos cambio para sumar comisiones/dividendos en EUR
+        # Obtenemos cambio
         fx = get_exchange_rate(moneda_origen, MONEDA_BASE)
         
         total_comisiones += (comi * fx)
@@ -100,15 +117,15 @@ if data:
         if tipo == "Compra":
             cartera[t] = cartera.get(t, {'cant': 0, 'moneda': moneda_origen})
             cartera[t]['cant'] += cant
-            cartera[t]['moneda'] = moneda_origen # Guardamos moneda del activo
+            cartera[t]['moneda'] = moneda_origen 
             
         elif tipo == "Venta":
             if t in cartera:
                 cartera[t]['cant'] -= cant
+                # Evitar negativos por error de datos
+                if cartera[t]['cant'] < 0: cartera[t]['cant'] = 0
                 
         elif tipo == "Dividendo":
-            # Precio aquí suele ser el total cobrado o por acción? 
-            # Asumiremos Precio = Total Cobrado bruto en este form simple
             total_dividendos += (row.get('Precio', 0) * fx)
 
     # --- VISUALIZACIÓN ---
@@ -119,20 +136,22 @@ if data:
     valor_cartera_eur = 0
     lista_activos = []
 
-    # Calcular valor actual de acciones vivas
     with st.spinner("Actualizando precios de mercado..."):
         for tick, info in cartera.items():
             cantidad_viva = info['cant']
             
-            if cantidad_viva > 0.01: # Solo mostramos si tenemos algo
+            if cantidad_viva > 0.01: 
                 moneda_activo = info['moneda']
                 
-                # Buscar precio actual
                 try:
                     stock = yf.Ticker(tick)
-                    precio_actual = stock.history(period="1d")['Close'].iloc[-1]
+                    # Intentamos obtener precio, si falla usamos 0
+                    hist = stock.history(period="1d")
+                    if not hist.empty:
+                        precio_actual = hist['Close'].iloc[-1]
+                    else:
+                        precio_actual = 0
                     
-                    # Convertir a Euros
                     fx_rate = get_exchange_rate(moneda_activo, MONEDA_BASE)
                     valor_posicion_eur = cantidad_viva * precio_actual * fx_rate
                     
@@ -152,11 +171,12 @@ if data:
     col3.metric("Comisiones Pagadas", f"{total_comisiones:,.2f} €", delta_color="inverse")
     
     st.divider()
-    st.subheader("🔍 Desglose de Activos")
-    st.dataframe(pd.DataFrame(lista_activos), use_container_width=True)
+    if lista_activos:
+        st.subheader("🔍 Desglose de Activos")
+        st.dataframe(pd.DataFrame(lista_activos), use_container_width=True)
     
     with st.expander("Ver Histórico de Operaciones"):
-        st.dataframe(df.sort_values(by="Fecha", ascending=False))
+        st.dataframe(df)
 
 else:
     st.info("Añade tu primera operación en la barra lateral.")
