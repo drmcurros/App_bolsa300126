@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from pyairtable import Api
+from datetime import datetime, time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Mi Patrimonio Pro", layout="wide") 
-MONEDA_BASE = "EUR"  # La moneda en la que quieres ver tu total
+st.set_page_config(page_title="Gestor de Inversiones V3", layout="wide") 
+MONEDA_BASE = "EUR" 
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIONES ---
 def check_password():
     if st.session_state.get('password_correct', False): return True
     st.header("🔒 Login")
@@ -19,164 +20,169 @@ def check_password():
             if user == st.secrets["credenciales"]["usuario"] and pw == st.secrets["credenciales"]["password"]:
                 st.session_state['password_correct'] = True
                 st.rerun()
-            else: st.error("Incorrecto")
-        except: st.error("Revisa tus Secrets")
+            else: st.error("Datos incorrectos")
+        except: st.error("Faltan configurar los Secrets")
     return False
 
-def get_exchange_rate(from_currency, to_currency):
-    """Devuelve el tipo de cambio actual (ej. de USD a EUR)."""
-    if from_currency == to_currency: return 1.0
+def get_exchange_rate(from_curr, to_curr="EUR"):
+    if from_curr == to_curr: return 1.0
     try:
-        pair = f"{to_currency}=X" if from_currency == "USD" else f"{from_currency}{to_currency}=X"
-        ticker = yf.Ticker(pair)
-        hist = ticker.history(period="1d")
-        if not hist.empty:
-            return hist['Close'].iloc[-1]
-        return 1.0
-    except:
-        return 1.0 
+        pair = f"{to_curr}=X" if from_curr == "USD" else f"{from_curr}{to_curr}=X"
+        hist = yf.Ticker(pair).history(period="1d")
+        return hist['Close'].iloc[-1] if not hist.empty else 1.0
+    except: return 1.0
 
-# --- INICIO ---
+# --- APP ---
 if not check_password(): st.stop()
 
 # Conexión Airtable
 try:
     api = Api(st.secrets["airtable"]["api_token"])
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
-except: 
-    st.error("Error conectando a Airtable. Revisa el ID de la base y el Token.")
-    st.stop()
+except: st.stop()
 
-st.title(f"🌍 Mi Patrimonio ({MONEDA_BASE})")
+st.title("💼 Mi Cartera (Por Importes)")
 
 # --- BARRA LATERAL: NUEVA OPERACIÓN ---
 with st.sidebar:
-    st.header("Registrar Operación")
-    with st.form("new_trade"):
+    st.header("Registrar Movimiento")
+    with st.form("trade_form"):
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
         ticker = st.text_input("Ticker (ej. AAPL)").upper()
-        moneda = st.selectbox("Moneda del Activo", ["EUR", "USD"])
+        descripcion = st.text_input("Descripción (ej. Apple Inc.)")
+        moneda = st.selectbox("Moneda", ["EUR", "USD"])
         
-        c1, c2 = st.columns(2)
-        cantidad = c1.number_input("Cantidad", min_value=0.0, step=1.0)
-        precio = c2.number_input("Precio/Acción", min_value=0.0)
+        # CAMBIO CLAVE: Ahora pedimos DINERO total
+        col_dinero, col_precio = st.columns(2)
+        dinero_total = col_dinero.number_input("Importe Total (Dinero)", min_value=0.0, step=10.0, help="Dinero invertido, retirado o cobrado")
+        precio_accion = col_precio.number_input("Precio Cotización", min_value=0.0, format="%.2f", help="Precio al que está la acción en ese momento")
         
-        c3, c4 = st.columns(2)
-        comision = c3.number_input("Comisión Total", min_value=0.0)
-        fecha = c4.date_input("Fecha")
+        comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
         
-        if st.form_submit_button("Guardar"):
-            if ticker:
+        # FECHA Y HORA
+        c_date, c_time = st.columns(2)
+        fecha_op = c_date.date_input("Fecha")
+        hora_op = c_time.time_input("Hora", value=time(9, 30)) # Hora por defecto apertura mercado
+        
+        if st.form_submit_button("Guardar Operación"):
+            if ticker and dinero_total > 0:
+                # Construimos fecha completa ISO string para Airtable
+                fecha_completa = datetime.combine(fecha_op, hora_op).isoformat()
+                
+                record = {
+                    "Tipo": tipo,
+                    "Ticker": ticker,
+                    "Descripcion": descripcion,
+                    "Moneda": moneda,
+                    "Cantidad": float(dinero_total),  # OJO: Aquí guardamos DINERO
+                    "Precio": float(precio_accion),   # Aquí guardamos PRECIO UNITARIO
+                    "Comision": float(comision),
+                    "Fecha": fecha_completa
+                }
+                
                 try:
-                    table.create({
-                        "Tipo": tipo, "Ticker": ticker, "Moneda": moneda,
-                        "Cantidad": float(cantidad), "Precio": float(precio),
-                        "Comision": float(comision), "Fecha": str(fecha)
-                    })
-                    st.success("Guardado ✅")
+                    table.create(record)
+                    st.success(f"Guardado: {tipo} de {dinero_total} {moneda} en {ticker}")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error guardando: {e}")
+                    st.error(f"Error Airtable: {e}")
 
-# --- CÁLCULOS (EL CEREBRO) ---
-try:
-    data = table.all()
-except:
-    data = []
+# --- CÁLCULOS LOGICA INVERSA ---
+try: data = table.all()
+except: data = []
 
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # --- CORRECCIÓN DEL ERROR AQUÍ ---
-    # Verificamos si las columnas existen. Si no, las creamos con ceros.
-    cols_numericas = ["Cantidad", "Precio", "Comision"]
-    for col in cols_numericas:
-        if col not in df.columns:
-            df[col] = 0.0
-        else:
-            df[col] = df[col].fillna(0.0)
-
-    # Variables para totales
-    cartera = {} 
-    total_dividendos = 0
-    total_comisiones = 0
+    # Rellenar columnas faltantes por seguridad
+    for col in ["Cantidad", "Precio", "Comision"]:
+        if col not in df.columns: df[col] = 0.0
+        else: df[col] = df[col].fillna(0.0)
     
-    # Procesar histórico
+    cartera = {}
+    total_divis_eur = 0
+    total_comis_eur = 0
+    
+    # Procesamos fila a fila
     for i, row in df.iterrows():
-        t = row.get('Ticker')
         tipo = row.get('Tipo')
-        cant = row.get('Cantidad', 0)
+        tick = row.get('Ticker')
+        desc = row.get('Descripcion', tick) # Si no hay descripcion, usa el Ticker
+        
+        # IMPORTANTE: Interpretación de columnas según tu nueva lógica
+        dinero_operacion = row.get('Cantidad', 0) # Esto es €/$
+        precio_momento = row.get('Precio', 1)     # Esto es €/$ por acción
         comi = row.get('Comision', 0)
-        moneda_origen = row.get('Moneda', 'EUR')
+        moneda = row.get('Moneda', 'EUR')
         
-        # Obtenemos cambio
-        fx = get_exchange_rate(moneda_origen, MONEDA_BASE)
+        # Calcular cuántas acciones implica ese dinero
+        # Si el precio es 0 (ej. error), evitamos dividir por cero
+        num_acciones = (dinero_operacion / precio_momento) if precio_momento > 0 else 0
         
-        total_comisiones += (comi * fx)
+        fx = get_exchange_rate(moneda, MONEDA_BASE)
+        total_comis_eur += (comi * fx)
         
         if tipo == "Compra":
-            cartera[t] = cartera.get(t, {'cant': 0, 'moneda': moneda_origen})
-            cartera[t]['cant'] += cant
-            cartera[t]['moneda'] = moneda_origen 
+            if tick not in cartera:
+                cartera[tick] = {'acciones': 0, 'desc': desc, 'moneda': moneda}
+            # Sumamos acciones calculadas
+            cartera[tick]['acciones'] += num_acciones
+            cartera[tick]['desc'] = desc # Actualizamos descripción
             
         elif tipo == "Venta":
-            if t in cartera:
-                cartera[t]['cant'] -= cant
-                # Evitar negativos por error de datos
-                if cartera[t]['cant'] < 0: cartera[t]['cant'] = 0
+            if tick in cartera:
+                cartera[tick]['acciones'] -= num_acciones
+                if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
                 
         elif tipo == "Dividendo":
-            total_dividendos += (row.get('Precio', 0) * fx)
+            # En dividendo, 'dinero_operacion' es el cobro directo
+            total_divis_eur += (dinero_operacion * fx)
 
-    # --- VISUALIZACIÓN ---
+    # --- DASHBOARD VISUAL ---
     
-    st.subheader("📊 Resumen Global")
-    col1, col2, col3 = st.columns(3)
+    valor_total_cartera = 0
+    tabla_final = []
     
-    valor_cartera_eur = 0
-    lista_activos = []
-
-    with st.spinner("Actualizando precios de mercado..."):
-        for tick, info in cartera.items():
-            cantidad_viva = info['cant']
-            
-            if cantidad_viva > 0.01: 
-                moneda_activo = info['moneda']
-                
+    with st.spinner("Valorando cartera..."):
+        for tick, data_stock in cartera.items():
+            acc = data_stock['acciones']
+            if acc > 0.001: # Filtrar posiciones cerradas
                 try:
-                    stock = yf.Ticker(tick)
-                    # Intentamos obtener precio, si falla usamos 0
-                    hist = stock.history(period="1d")
-                    if not hist.empty:
-                        precio_actual = hist['Close'].iloc[-1]
-                    else:
-                        precio_actual = 0
+                    # Precio actual mercado
+                    curr_price = yf.Ticker(tick).history(period="1d")['Close'].iloc[-1]
+                    moneda_act = data_stock['moneda']
                     
-                    fx_rate = get_exchange_rate(moneda_activo, MONEDA_BASE)
-                    valor_posicion_eur = cantidad_viva * precio_actual * fx_rate
+                    fx_now = get_exchange_rate(moneda_act, MONEDA_BASE)
+                    val_eur = acc * curr_price * fx_now
+                    valor_total_cartera += val_eur
                     
-                    valor_cartera_eur += valor_posicion_eur
-                    
-                    lista_activos.append({
+                    tabla_final.append({
+                        "Empresa": data_stock['desc'],
                         "Ticker": tick,
-                        "Acciones": cantidad_viva,
-                        "Precio": f"{precio_actual:.2f} {moneda_activo}",
-                        "Valor (EUR)": round(valor_posicion_eur, 2)
+                        "Acciones (Calc)": f"{acc:.4f}",
+                        "Precio Mercado": f"{curr_price:.2f} {moneda_act}",
+                        "Valor Total (€)": val_eur
                     })
-                except:
-                    pass
+                except: pass
 
-    col1.metric("Valor Cartera", f"{valor_cartera_eur:,.2f} €")
-    col2.metric("Dividendos Cobrados", f"{total_dividendos:,.2f} €")
-    col3.metric("Comisiones Pagadas", f"{total_comisiones:,.2f} €", delta_color="inverse")
+    # Métricas
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Valor Cartera", f"{valor_total_cartera:,.2f} €")
+    c2.metric("Dividendos", f"{total_divis_eur:,.2f} €")
+    c3.metric("Comisiones", f"{total_comis_eur:,.2f} €")
     
     st.divider()
-    if lista_activos:
-        st.subheader("🔍 Desglose de Activos")
-        st.dataframe(pd.DataFrame(lista_activos), use_container_width=True)
+    if tabla_final:
+        df_show = pd.DataFrame(tabla_final)
+        st.subheader("📊 Posiciones Abiertas")
+        st.dataframe(
+            df_show.style.format({"Valor Total (€)": "{:.2f} €"}), 
+            use_container_width=True, 
+            hide_index=True
+        )
     
-    with st.expander("Ver Histórico de Operaciones"):
-        st.dataframe(df)
+    with st.expander("📜 Historial Detallado"):
+        st.dataframe(df.sort_values(by="Fecha", ascending=False), use_container_width=True)
 
 else:
-    st.info("Añade tu primera operación en la barra lateral.")
+    st.info("No hay datos. Añade una operación.")
