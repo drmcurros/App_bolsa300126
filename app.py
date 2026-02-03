@@ -8,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V12.1 (Fix Gráficos)", layout="wide") 
+st.set_page_config(page_title="Gestor V12.2 (Fix Orden)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -85,7 +85,7 @@ def guardar_en_airtable(record):
         st.rerun()
     except Exception as e: st.error(f"Error guardando: {e}")
 
-# --- APP ---
+# --- APP INICIO ---
 if not check_password(): st.stop()
 
 try:
@@ -95,7 +95,7 @@ except Exception as e:
     st.error(f"Error conectando a Airtable: {e}")
     st.stop()
 
-# --- CARGA DATOS (GLOBAL) ---
+# 1. CARGA DATOS
 try: data = table.all()
 except: data = []
 
@@ -117,7 +117,7 @@ if data:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL (GLOBAL) ---
+# 2. BARRA LATERAL (CONFIGURACIÓN) - ESTO DEBE IR ANTES DE LOS CÁLCULOS
 with st.sidebar:
     st.header("Configuración")
     mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
@@ -129,17 +129,17 @@ with st.sidebar:
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
         lista_años += list(años_disponibles)
+    # IMPORTANTE: Definimos la variable AQUÍ para que exista antes de usarla
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     st.divider()
 
-    # Botón Añadir (Visible siempre que no estemos añadiendo ya)
+    # Botones de añadir operación
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
             st.session_state.reset_seed = int(datetime.now().timestamp())
             st.rerun()
 
-    # Formulario Añadir
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         st.markdown("### 📝 Datos de la Operación")
         if st.button("❌ Cerrar Formulario", use_container_width=True):
@@ -199,9 +199,7 @@ with st.sidebar:
                 st.session_state.pending_data = None
                 st.rerun()
 
-# --- MOTOR DE CÁLCULO (SE EJECUTA SIEMPRE ANTES DE LAS VISTAS) ---
-# Esto asegura que 'cartera_global' tenga datos tanto para Dashboard como para Detalle
-
+# 3. MOTOR DE CÁLCULO (AHORA SÍ FUNCIONA PORQUE YA EXISTE 'año_seleccionado')
 cartera_global = {}
 total_dividendos = 0.0 
 total_comisiones = 0.0
@@ -222,26 +220,23 @@ if not df.empty:
         fecha_op = row.get('Fecha_dt')
         year_op = row.get('Año')
         
-        # FILTRO DE FECHA (Solo afecta a las sumas de métricas, NO a los movimientos)
+        # Filtro de fecha para métricas
         en_rango = (año_seleccionado == "Todos los años") or (year_op == int(año_seleccionado))
 
         fx = get_exchange_rate_now(mon, MONEDA_BASE)
         dinero_eur = dinero * fx
         acciones_op = dinero / precio 
         
-        # Métricas Globales (Solo si en rango)
         if en_rango:
             total_comisiones += (comi * fx)
 
-        # Inicialización Diccionario
         if tick not in cartera_global:
             cartera_global[tick] = {
                 'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 
                 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon,
-                'movimientos': [] # Aquí guardamos TODO el historial
+                'movimientos': []
             }
         
-        # Guardamos el movimiento (Independiente del filtro, para el gráfico)
         row['Fecha_Raw'] = fecha_op
         cartera_global[tick]['movimientos'].append(row)
 
@@ -249,7 +244,6 @@ if not df.empty:
             cartera_global[tick]['acciones'] += acciones_op
             cartera_global[tick]['coste_total_eur'] += dinero_eur
             
-            # Solo suma al ROI del periodo si está en rango
             if en_rango:
                 total_compras_historicas_eur += dinero_eur 
 
@@ -264,10 +258,8 @@ if not df.empty:
             if en_rango:
                 coste_ventas_total += coste_proporcional 
                 pnl_global_cerrado += beneficio_operacion
-                # Para la tabla, sumamos P&L solo si está en rango
                 cartera_global[tick]['pnl_cerrado'] += beneficio_operacion
             
-            # Ajuste de inventario (Siempre)
             cartera_global[tick]['acciones'] -= acciones_op
             cartera_global[tick]['coste_total_eur'] -= coste_proporcional 
             if cartera_global[tick]['acciones'] < 0: cartera_global[tick]['acciones'] = 0
@@ -277,7 +269,7 @@ if not df.empty:
                 total_dividendos += dinero_eur
 
 # ==========================================
-#        VISTA DE DETALLE (SI HAY SELECCIÓN)
+#        VISTA DETALLE (SI HAY SELECCIÓN)
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
@@ -329,8 +321,9 @@ if st.session_state.ticker_detalle:
     m1.metric("Precio Actual", f"{precio_now:,.2f} {mon_sim}" if precio_now else "N/A")
     m2.metric("Tus Acciones", f"{acciones_activas:,.4f}")
     m3.metric("Valor en Cartera", f"{valor_mercado_eur:,.2f} €", 
-              delta=f"{rentabilidad_latente:+.2f}%" if acciones_activas > 0 else "0%",
-              help="Valor actual (no filtrado por año, es el estado actual)")
+              delta=f"{rentabilidad_latente:+.2f}%" if acciones_activas > 0 else "0%")
+    # PnL en detalle mostramos el total de la acción, o el filtrado si prefieres. 
+    # Aquí muestra lo que se calculó en el bucle (que está filtrado por año si se seleccionó)
     m4.metric("Bº Realizado", f"{info.get('pnl_cerrado',0):,.2f} €", 
               delta="En periodo" if año_seleccionado != "Todos los años" else "Total")
 
@@ -359,13 +352,13 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # --- CAPA OPERACIONES (PUNTOS Y LÍNEAS) ---
+        # CAPA OPERACIONES
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
         
-        COLOR_COMPRA = "#0044FF"  # Azul
-        COLOR_VENTA = "#800020"   # Burdeos
+        COLOR_COMPRA = "#0044FF"  
+        COLOR_VENTA = "#800020"   
 
         if movs_raw:
             df_movs_chart = pd.DataFrame(movs_raw)
@@ -377,24 +370,16 @@ if st.session_state.ticker_detalle:
             if not df_movs_chart.empty:
                 compras = df_movs_chart[df_movs_chart['Tipo'] == 'Compra']
                 if not compras.empty:
-                    rule_compra = alt.Chart(compras).mark_rule(
-                        color=COLOR_COMPRA, strokeDash=[4, 4], opacity=0.6
-                    ).encode(x='Date:T')
-                    point_compra = alt.Chart(compras).mark_point(
-                        shape='triangle-up', size=150, color=COLOR_COMPRA, filled=True, opacity=1
-                    ).encode(
+                    rule_compra = alt.Chart(compras).mark_rule(color=COLOR_COMPRA, strokeDash=[4, 4], opacity=0.6).encode(x='Date:T')
+                    point_compra = alt.Chart(compras).mark_point(shape='triangle-up', size=150, color=COLOR_COMPRA, filled=True, opacity=1).encode(
                         x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']
                     )
                     capa_compras = rule_compra + point_compra
 
                 ventas = df_movs_chart[df_movs_chart['Tipo'] == 'Venta']
                 if not ventas.empty:
-                    rule_venta = alt.Chart(ventas).mark_rule(
-                        color=COLOR_VENTA, strokeDash=[4, 4], opacity=0.6
-                    ).encode(x='Date:T')
-                    point_venta = alt.Chart(ventas).mark_point(
-                        shape='triangle-down', size=150, color=COLOR_VENTA, filled=True, opacity=1
-                    ).encode(
+                    rule_venta = alt.Chart(ventas).mark_rule(color=COLOR_VENTA, strokeDash=[4, 4], opacity=0.6).encode(x='Date:T')
+                    point_venta = alt.Chart(ventas).mark_point(shape='triangle-down', size=150, color=COLOR_VENTA, filled=True, opacity=1).encode(
                         x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']
                     )
                     capa_ventas = rule_venta + point_venta
@@ -475,4 +460,26 @@ else:
         st.subheader(f"📊 Cartera Detallada")
         st.info("👆 **Haz clic en una fila** para ver el gráfico interactivo.")
         
-        event = st.dataframe
+        event = st.dataframe(
+            df_show.style.map(lambda v: 'color: green' if v > 0 else 'color: red', subset=['Bº/P (Cerrado)', '% Latente'])
+                         .format({'% Latente': "{:.2%}"}),
+            column_config={
+                "Logo": st.column_config.ImageColumn("Logo", width="small"),
+                "Empresa": st.column_config.TextColumn("Empresa"),
+                "Ticker": st.column_config.TextColumn("Ticker"),
+                "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
+                "PMC": st.column_config.NumberColumn("PMC", format="%.2f €"),
+                "Saldo Invertido": st.column_config.NumberColumn("Invertido", format="%.2f €"),
+                "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", format="%.2f €"),
+                "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")
+            },
+            use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row"
+        )
+        
+        if len(event.selection.rows) > 0:
+            idx = event.selection.rows[0]
+            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
+            st.rerun()
+    else:
+        st.info("No hay datos para el periodo seleccionado.")
