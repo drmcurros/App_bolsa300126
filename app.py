@@ -6,7 +6,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Pro V6.1", layout="wide") 
+st.set_page_config(page_title="Gestor V6.2 (Fecha Auto)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO (SESSION STATE) ---
@@ -14,6 +14,9 @@ if "pending_data" not in st.session_state:
     st.session_state.pending_data = None
 if "adding_mode" not in st.session_state:
     st.session_state.adding_mode = False
+# NUEVO: Semilla para forzar el reseteo de los widgets de fecha
+if "reset_seed" not in st.session_state:
+    st.session_state.reset_seed = 0
 
 # --- FUNCIONES ---
 def check_password():
@@ -66,7 +69,7 @@ def guardar_en_airtable(record):
         table.create(record)
         st.success(f"✅ Guardado: {record['Ticker']}")
         st.session_state.pending_data = None
-        st.session_state.adding_mode = False # Cerramos el formulario al terminar
+        st.session_state.adding_mode = False # Cerramos formulario
         st.rerun()
     except Exception as e: st.error(f"Error: {e}")
 
@@ -93,7 +96,7 @@ if data:
         df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M').fillna("")
     else: df['Año'] = datetime.now().year
 
-# --- BARRA LATERAL (Lógica de Botones) ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     
     st.header("Filtros")
@@ -104,13 +107,18 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     st.divider()
 
-    # Botón Principal
+    # Botón Principal (Apertura de formulario)
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
+            # --- TRUCO CLAVE ---
+            # Actualizamos la semilla con el segundo actual.
+            # Esto obliga a los widgets de fecha a reiniciarse.
+            st.session_state.reset_seed = int(datetime.now().timestamp())
+            # -------------------
             st.rerun()
 
-    # Formulario de Registro
+    # Formulario
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         
         st.markdown("### 📝 Datos de la Operación")
@@ -135,8 +143,12 @@ with st.sidebar:
                 st.markdown("---")
                 st.write("📆 **Fecha:**")
                 cd, ct = st.columns(2)
-                f_in = cd.date_input("Día", value=datetime.now())
-                h_in = ct.time_input("Hora", value=datetime.now())
+                
+                # --- WIDGETS CON SEMILLA DINÁMICA ---
+                # Al añadir key=..., si reset_seed cambia, el widget se crea de cero con el value=NOW
+                f_in = cd.date_input("Día", value=datetime.now(), key=f"d_{st.session_state.reset_seed}")
+                h_in = ct.time_input("Hora", value=datetime.now(), key=f"t_{st.session_state.reset_seed}")
+                # ------------------------------------
                 
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
@@ -170,7 +182,7 @@ with st.sidebar:
                 st.session_state.pending_data = None
                 st.rerun()
 
-# --- CÁLCULO DE RENTABILIDAD ---
+# --- CÁLCULOS ---
 if not df.empty:
     df_filtrado = df.copy()
     if año_seleccionado != "Todos los años":
@@ -260,7 +272,6 @@ if not df.empty:
         df_show = pd.DataFrame(tabla_final)
         st.subheader(f"📊 Rentabilidad {año_seleccionado}")
         
-        # --- CONFIGURACIÓN SEPARADA PARA EVITAR ERRORES DE SINTAXIS ---
         cfg_columnas = {
             "Empresa": st.column_config.TextColumn("Empresa", help="Nombre comercial."),
             "Ticker": st.column_config.TextColumn("Ticker", help="Símbolo bursátil."),
@@ -270,15 +281,11 @@ if not df.empty:
             "Bº/P (Cerrado)": st.column_config.NumberColumn("Bº/P (Cerrado)", help="Beneficio/Pérdida de ventas ya cerradas.", format="%.2f €"),
         }
 
-        # Aplicamos estilo
-        estilo = df_show.style.map(
-            lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
-            subset=['Bº/P (Cerrado)']
-        )
-
-        # Mostramos tabla
         st.dataframe(
-            estilo,
+            df_show.style.map(
+                lambda v: 'color: green; font-weight: bold;' if v > 0 else 'color: red; font-weight: bold;' if v < 0 else '', 
+                subset=['Bº/P (Cerrado)']
+            ),
             column_config=cfg_columnas,
             use_container_width=True, 
             hide_index=True
