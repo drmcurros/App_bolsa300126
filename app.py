@@ -5,7 +5,7 @@ from pyairtable import Api
 from datetime import datetime, time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor de Inversiones Blindado", layout="wide") 
+st.set_page_config(page_title="Gestor Híbrido", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -41,7 +41,7 @@ try:
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera (V3.3 Blindada)")
+st.title("💼 Mi Cartera (Control Total)")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -49,6 +49,10 @@ with st.sidebar:
     with st.form("trade_form"):
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
         ticker = st.text_input("Ticker (ej. AAPL)").upper()
+        
+        # --- CAMBIO AQUÍ: Campo manual recuperado ---
+        desc_manual = st.text_input("Descripción (Opcional)", help="Escribe el nombre si quieres. Si lo dejas vacío, intentaré buscarlo en internet.")
+        
         moneda = st.selectbox("Moneda", ["EUR", "USD"])
         
         col_dinero, col_precio = st.columns(2)
@@ -64,23 +68,34 @@ with st.sidebar:
             if ticker and dinero_total > 0:
                 fecha_completa = datetime.combine(fecha_op, hora_op).isoformat()
                 
-                # Auto-nombre
-                nombre_empresa = ticker 
-                try:
-                    with st.spinner(f"Buscando nombre de {ticker}..."):
-                        info = yf.Ticker(ticker).info
-                        nombre_empresa = info.get('longName') or info.get('shortName') or ticker
-                except: pass
+                # --- LÓGICA DE NOMBRE ---
+                nombre_final = ticker # Por defecto, el Ticker
+                
+                # 1. ¿El usuario escribió algo? -> Usamos eso (Manda el humano)
+                if desc_manual:
+                    nombre_final = desc_manual
+                else:
+                    # 2. Si está vacío -> Intentamos buscar en internet (Intenta el robot)
+                    try:
+                        with st.spinner(f"Intentando buscar nombre de {ticker}..."):
+                            info = yf.Ticker(ticker).info
+                            # Buscamos cualquier campo que parezca un nombre
+                            encontrado = info.get('longName') or info.get('shortName')
+                            if encontrado:
+                                nombre_final = encontrado
+                    except:
+                        # Si falla (por bloqueo de Yahoo), se queda con el Ticker en silencio
+                        pass
                 
                 record = {
-                    "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_empresa, 
+                    "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
                     "Moneda": moneda, "Cantidad": float(dinero_total),
                     "Precio": float(precio_accion), "Comision": float(comision),
                     "Fecha": fecha_completa
                 }
                 try:
                     table.create(record)
-                    st.success(f"Guardado: {ticker}")
+                    st.success(f"Guardado: {ticker} como '{nombre_final}'")
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
 
@@ -103,21 +118,17 @@ if data:
     for i, row in df.iterrows():
         tipo = row.get('Tipo')
         
-        # --- LIMPIEZA EXTREMA DE TEXTOS ---
-        # Convertimos SIEMPRE a string para evitar errores de longitud
+        # Limpieza de textos
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
-        
         raw_desc = row.get('Descripcion')
-        if pd.isna(raw_desc) or raw_desc is None:
-            desc = tick
+        if pd.isna(raw_desc) or raw_desc is None: desc = tick
         else:
             desc = str(raw_desc).strip()
             if desc == "": desc = tick
-        # ----------------------------------
 
         dinero = float(row.get('Cantidad', 0))
         precio = float(row.get('Precio', 1))
-        if precio == 0: precio = 1 # Evitar div/0
+        if precio == 0: precio = 1 
         
         comi = float(row.get('Comision', 0))
         moneda = row.get('Moneda', 'EUR')
@@ -132,14 +143,9 @@ if data:
             
             cartera[tick]['acciones'] += num_acciones
             
-            # --- COMPARACIÓN SEGURA (Aquí fallaba antes) ---
-            # Forzamos str() a ambos lados antes de medir len()
-            desc_nueva = str(desc)
-            desc_actual = str(cartera[tick]['desc'])
-            
-            if len(desc_nueva) > len(desc_actual): 
-                cartera[tick]['desc'] = desc_nueva
-            # -----------------------------------------------
+            # Actualizar nombre solo si el nuevo es más largo (ej. "Tesla" gana a "TSLA")
+            if len(str(desc)) > len(str(cartera[tick]['desc'])): 
+                cartera[tick]['desc'] = str(desc)
             
         elif tipo == "Venta":
             if tick in cartera:
