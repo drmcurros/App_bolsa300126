@@ -6,7 +6,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor API Pro", layout="wide") 
+st.set_page_config(page_title="Gestor Doble Check", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -33,23 +33,32 @@ def get_exchange_rate(from_curr, to_curr="EUR"):
     except: return 1.0
 
 def get_stock_data_fmp(ticker):
-    """
-    Conecta con la API oficial de Financial Modeling Prep.
-    Devuelve: (Nombre, Precio) o (None, None) si falla.
-    """
+    """ Intenta obtener datos de FMP (API Oficial) """
     try:
         api_key = st.secrets["fmp"]["api_key"]
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=3)
         data = response.json()
-        
         if data and len(data) > 0:
             nombre = data[0].get('companyName')
             precio = data[0].get('price')
             return nombre, precio
         return None, None
-    except Exception as e:
+    except: return None, None
+
+def get_stock_data_yahoo(ticker):
+    """ Intenta obtener datos de Yahoo (Plan B) """
+    try:
+        stock = yf.Ticker(ticker)
+        # Verificamos si tiene historial reciente (prueba definitiva de existencia)
+        hist = stock.history(period="5d")
+        if not hist.empty:
+            precio = hist['Close'].iloc[-1]
+            # Intentamos sacar el nombre, si falla usamos el Ticker
+            nombre = stock.info.get('longName') or stock.info.get('shortName') or ticker
+            return nombre, precio
         return None, None
+    except: return None, None
 
 # --- APP ---
 if not check_password(): st.stop()
@@ -59,7 +68,7 @@ try:
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera (Motor FMP)")
+st.title("💼 Mi Cartera (Doble Validación)")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -74,51 +83,42 @@ with st.sidebar:
         col_dinero, col_precio = st.columns(2)
         dinero_total = col_dinero.number_input("Importe Total", min_value=0.0, step=10.0)
         
-        # El precio lo intentaremos autocompletar, pero dejamos que lo edites
-        precio_manual = col_precio.number_input("Precio (Opcional si buscas)", min_value=0.0, format="%.2f", help="Si pones 0, intentaré coger el precio real.")
+        precio_manual = col_precio.number_input("Precio (Opcional)", min_value=0.0, format="%.2f")
         comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
         
-        # Botón de búsqueda previa (para ver si existe sin guardar)
         check_btn = st.form_submit_button("🔍 Verificar y Guardar")
 
         if check_btn:
             if ticker and dinero_total > 0:
                 
-                # 1. VERIFICACIÓN ROBUSTA CON API OFICIAL
-                nombre_api = None
-                precio_api = 0.0
-                es_valido = False
+                nombre_final = None
+                precio_final = 0.0
                 
-                with st.spinner(f"Consultando base de datos oficial para {ticker}..."):
-                    nombre_api, precio_api = get_stock_data_fmp(ticker)
+                with st.spinner(f"Analizando '{ticker}' en múltiples bases de datos..."):
                     
-                    if nombre_api:
-                        es_valido = True
-                    else:
-                        # Plan B: Yahoo (por si FMP falla o se acaban los créditos)
-                        try:
-                            info = yf.Ticker(ticker).info
-                            # Si Yahoo devuelve algo con sentido, lo damos por bueno
-                            if 'regularMarketPrice' in info or 'currentPrice' in info:
-                                es_valido = True
-                                nombre_api = info.get('longName', ticker)
-                                precio_api = info.get('currentPrice', 0)
-                        except: pass
+                    # 1. INTENTO A: API OFICIAL (FMP)
+                    nombre_final, precio_final = get_stock_data_fmp(ticker)
+                    
+                    # 2. INTENTO B: YAHOO FINANCE (Si A falla)
+                    if not nombre_final:
+                        nombre_final, precio_final = get_stock_data_yahoo(ticker)
 
-                # 2. DECISIÓN DEL PORTERO
-                if not es_valido and not desc_manual:
-                    st.error(f"❌ Error: El ticker '{ticker}' no existe en la base de datos oficial. Verifica que esté bien escrito.")
+                # --- EL PORTERO FINAL ---
+                # Si después de consultar a los dos, no hay nombre y el usuario no escribió uno manual...
+                if not nombre_final and not desc_manual:
+                    st.error(f"❌ ERROR: El ticker '{ticker}' no aparece ni en FMP ni en Yahoo Finance. Revisa si está bien escrito.")
                     st.stop()
                 
-                # 3. PREPARAR DATOS
-                # Nombre: Manual > API > Ticker
-                nombre_final = desc_manual if desc_manual else (nombre_api if nombre_api else ticker)
+                # PREPARACIÓN DE DATOS
+                if desc_manual: nombre_final = desc_manual # Manda el usuario
+                if not nombre_final: nombre_final = ticker # Por si acaso
                 
-                # Precio: Manual > API > 0
-                precio_final = precio_manual if precio_manual > 0 else (precio_api if precio_api else 0)
+                # Prioridad de precio: Manual > Internet
+                if precio_manual > 0: precio_final = precio_manual
+                if not precio_final: precio_final = 0.0
                 
                 if precio_final == 0:
-                    st.warning("⚠️ No se encontró precio online. Por favor introduce el precio manualmente.")
+                    st.warning("⚠️ El ticker existe pero no encuentro su precio online. Introduce el precio manualmente.")
                     st.stop()
 
                 fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
@@ -191,15 +191,12 @@ if data:
     val_total = 0
     tabla = []
     
-    with st.spinner("Valorando cartera (FMP + Yahoo)..."):
+    with st.spinner("Actualizando valoraciones..."):
         for t, info in cartera.items():
             acc = info['acciones']
             if acc > 0.001:
-                # Intentamos obtener precio actual
-                # 1. Probamos FMP (más rápido y fiable)
+                # Lógica Híbrida también para valoración
                 _, p_now = get_stock_data_fmp(t)
-                
-                # 2. Si falla FMP, probamos Yahoo
                 if not p_now:
                     try: p_now = yf.Ticker(t).history(period="1d")['Close'].iloc[-1]
                     except: pass
