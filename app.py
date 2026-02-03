@@ -5,7 +5,7 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Automático", layout="wide") 
+st.set_page_config(page_title="Gestor Cartera", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -41,7 +41,7 @@ try:
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera (Fecha Auto)")
+st.title("💼 Mi Cartera")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -59,13 +59,12 @@ with st.sidebar:
         precio_accion = col_precio.number_input("Precio Cotización", min_value=0.0, format="%.2f")
         comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
         
-        # NOTA: Ya no hay campos de fecha/hora aquí.
-        
         if st.form_submit_button("Guardar Operación"):
             if ticker and dinero_total > 0:
-                # --- FECHA AUTOMÁTICA AQUÍ ---
-                fecha_completa = datetime.now().isoformat()
-                # -----------------------------
+                # --- CAMBIO AQUÍ: FORMATO LEGIBLE ---
+                # %Y = Año, %m = Mes, %d = Día, %H:%M = Hora:Minutos
+                fecha_bonita = datetime.now().strftime("%Y/%m/%d %H:%M")
+                # ------------------------------------
                 
                 nombre_final = ticker 
                 if desc_manual:
@@ -82,11 +81,11 @@ with st.sidebar:
                     "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
                     "Moneda": moneda, "Cantidad": float(dinero_total),
                     "Precio": float(precio_accion), "Comision": float(comision),
-                    "Fecha": fecha_completa
+                    "Fecha": fecha_bonita
                 }
                 try:
                     table.create(record)
-                    st.success(f"Guardado: {ticker} ({datetime.now().strftime('%H:%M:%S')})")
+                    st.success(f"Guardado: {ticker} el {fecha_bonita}")
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
 
@@ -177,7 +176,10 @@ if data:
     with st.expander("Historial"):
         if not df.empty:
             cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio'] if c in df.columns]
-            st.dataframe(df[cols].sort_values(by="Fecha", ascending=False), use_container_width=True)
+            st.dataframe(
+                df[cols].sort_values(by="Fecha", ascending=False), 
+                use_container_width=True
+            )
 
 else:
     st.info("Sin datos.")
