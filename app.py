@@ -5,7 +5,7 @@ from pyairtable import Api
 from datetime import datetime, time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor de Inversiones Auto", layout="wide") 
+st.set_page_config(page_title="Gestor de Inversiones Blindado", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -41,23 +41,19 @@ try:
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera (Inteligente)")
+st.title("💼 Mi Cartera (V3.3 Blindada)")
 
-# --- BARRA LATERAL: NUEVA OPERACIÓN ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     st.header("Registrar Movimiento")
     with st.form("trade_form"):
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
         ticker = st.text_input("Ticker (ej. AAPL)").upper()
-        
-        # Buscador automático de nombre (oculto)
-        
         moneda = st.selectbox("Moneda", ["EUR", "USD"])
         
         col_dinero, col_precio = st.columns(2)
-        dinero_total = col_dinero.number_input("Importe Total (Dinero)", min_value=0.0, step=10.0, help="Dinero invertido o retirado")
-        precio_accion = col_precio.number_input("Precio Cotización", min_value=0.0, format="%.2f", help="Precio de la acción en ese momento")
-        
+        dinero_total = col_dinero.number_input("Importe Total (Dinero)", min_value=0.0, step=10.0)
+        precio_accion = col_precio.number_input("Precio Cotización", min_value=0.0, format="%.2f")
         comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
         
         c_date, c_time = st.columns(2)
@@ -68,32 +64,25 @@ with st.sidebar:
             if ticker and dinero_total > 0:
                 fecha_completa = datetime.combine(fecha_op, hora_op).isoformat()
                 
-                # --- AUTO-COMPLETADO DE NOMBRE ---
+                # Auto-nombre
                 nombre_empresa = ticker 
                 try:
-                    with st.spinner(f"Buscando nombre de {ticker} en internet..."):
-                        info_stock = yf.Ticker(ticker).info
-                        nombre_empresa = info_stock.get('longName') or info_stock.get('shortName') or ticker
-                except Exception as e:
-                    st.warning(f"No se pudo encontrar el nombre oficial. Se usará {ticker}.")
+                    with st.spinner(f"Buscando nombre de {ticker}..."):
+                        info = yf.Ticker(ticker).info
+                        nombre_empresa = info.get('longName') or info.get('shortName') or ticker
+                except: pass
                 
                 record = {
-                    "Tipo": tipo,
-                    "Ticker": ticker,
-                    "Descripcion": nombre_empresa, 
-                    "Moneda": moneda,
-                    "Cantidad": float(dinero_total),
-                    "Precio": float(precio_accion),
-                    "Comision": float(comision),
+                    "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_empresa, 
+                    "Moneda": moneda, "Cantidad": float(dinero_total),
+                    "Precio": float(precio_accion), "Comision": float(comision),
                     "Fecha": fecha_completa
                 }
-                
                 try:
                     table.create(record)
-                    st.success(f"Guardado: {tipo} de {nombre_empresa} ({ticker})")
+                    st.success(f"Guardado: {ticker}")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error Airtable: {e}")
+                except Exception as e: st.error(f"Error: {e}")
 
 # --- CÁLCULOS ---
 try: data = table.all()
@@ -102,10 +91,10 @@ except: data = []
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # Rellenar columnas numéricas
+    # Rellenar numéricos
     for col in ["Cantidad", "Precio", "Comision"]:
-        if col not in df.columns: df[col] = 0.0
-        else: df[col] = df[col].fillna(0.0)
+        df[col] = df.get(col, 0.0)
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
     
     cartera = {}
     total_divis_eur = 0
@@ -113,37 +102,44 @@ if data:
     
     for i, row in df.iterrows():
         tipo = row.get('Tipo')
-        tick = str(row.get('Ticker', '')) # Forzamos a texto siempre
         
-        # --- CORRECCIÓN DEL ERROR AQUÍ ---
-        # 1. Obtenemos el valor crudo
+        # --- LIMPIEZA EXTREMA DE TEXTOS ---
+        # Convertimos SIEMPRE a string para evitar errores de longitud
+        tick = str(row.get('Ticker', 'UNKNOWN')).strip()
+        
         raw_desc = row.get('Descripcion')
-        
-        # 2. Si está vacío o es un error (NaN), usamos el Ticker
-        if pd.isna(raw_desc) or not raw_desc:
+        if pd.isna(raw_desc) or raw_desc is None:
             desc = tick
         else:
-            # 3. Forzamos a que sea texto siempre
-            desc = str(raw_desc)
+            desc = str(raw_desc).strip()
+            if desc == "": desc = tick
+        # ----------------------------------
+
+        dinero = float(row.get('Cantidad', 0))
+        precio = float(row.get('Precio', 1))
+        if precio == 0: precio = 1 # Evitar div/0
         
-        dinero_operacion = row.get('Cantidad', 0)
-        precio_momento = row.get('Precio', 1)
-        comi = row.get('Comision', 0)
+        comi = float(row.get('Comision', 0))
         moneda = row.get('Moneda', 'EUR')
         
-        num_acciones = (dinero_operacion / precio_momento) if precio_momento > 0 else 0
-        
+        num_acciones = dinero / precio
         fx = get_exchange_rate(moneda, MONEDA_BASE)
         total_comis_eur += (comi * fx)
         
         if tipo == "Compra":
             if tick not in cartera:
                 cartera[tick] = {'acciones': 0, 'desc': desc, 'moneda': moneda}
+            
             cartera[tick]['acciones'] += num_acciones
             
-            # Ahora la comparación es segura porque ambos son texto
-            if len(desc) > len(cartera[tick]['desc']): 
-                cartera[tick]['desc'] = desc
+            # --- COMPARACIÓN SEGURA (Aquí fallaba antes) ---
+            # Forzamos str() a ambos lados antes de medir len()
+            desc_nueva = str(desc)
+            desc_actual = str(cartera[tick]['desc'])
+            
+            if len(desc_nueva) > len(desc_actual): 
+                cartera[tick]['desc'] = desc_nueva
+            # -----------------------------------------------
             
         elif tipo == "Venta":
             if tick in cartera:
@@ -151,52 +147,43 @@ if data:
                 if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
                 
         elif tipo == "Dividendo":
-            total_divis_eur += (dinero_operacion * fx)
+            total_divis_eur += (dinero * fx)
 
     # --- DASHBOARD ---
-    valor_total_cartera = 0
-    tabla_final = []
+    val_total = 0
+    tabla = []
     
-    with st.spinner("Actualizando valoraciones..."):
-        for tick, data_stock in cartera.items():
-            acc = data_stock['acciones']
+    with st.spinner("Calculando..."):
+        for t, info in cartera.items():
+            acc = info['acciones']
             if acc > 0.001:
                 try:
-                    curr_price = yf.Ticker(tick).history(period="1d")['Close'].iloc[-1]
-                    moneda_act = data_stock['moneda']
-                    fx_now = get_exchange_rate(moneda_act, MONEDA_BASE)
-                    val_eur = acc * curr_price * fx_now
-                    valor_total_cartera += val_eur
-                    
-                    tabla_final.append({
-                        "Empresa": data_stock['desc'],
-                        "Ticker": tick,
-                        "Acciones": f"{acc:.4f}",
-                        "Precio Mercado": f"{curr_price:.2f} {moneda_act}",
-                        "Valor Total (€)": val_eur
+                    p_now = yf.Ticker(t).history(period="1d")['Close'].iloc[-1]
+                    mon = info['moneda']
+                    fx = get_exchange_rate(mon, MONEDA_BASE)
+                    val = acc * p_now * fx
+                    val_total += val
+                    tabla.append({
+                        "Empresa": info['desc'], "Ticker": t,
+                        "Acciones": f"{acc:.4f}", "Precio": f"{p_now:.2f} {mon}",
+                        "Valor (€)": val
                     })
                 except: pass
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Valor Cartera", f"{valor_total_cartera:,.2f} €")
+    c1.metric("Cartera", f"{val_total:,.2f} €")
     c2.metric("Dividendos", f"{total_divis_eur:,.2f} €")
     c3.metric("Comisiones", f"{total_comis_eur:,.2f} €")
     
     st.divider()
-    if tabla_final:
-        df_show = pd.DataFrame(tabla_final)
-        st.subheader("📊 Posiciones Abiertas")
-        st.dataframe(
-            df_show.style.format({"Valor Total (€)": "{:.2f} €"}), 
-            use_container_width=True, 
-            hide_index=True
-        )
+    if tabla:
+        st.subheader("📊 Posiciones")
+        st.dataframe(pd.DataFrame(tabla).style.format({"Valor (€)": "{:.2f} €"}), use_container_width=True)
     
-    with st.expander("📜 Historial Detallado"):
-        # Mostramos columnas clave que existan
-        cols_posibles = ['Fecha', 'Tipo', 'Descripcion', 'Ticker', 'Cantidad', 'Precio', 'Moneda']
-        cols_finales = [c for c in cols_posibles if c in df.columns]
-        st.dataframe(df[cols_finales].sort_values(by="Fecha", ascending=False), use_container_width=True)
+    with st.expander("Historial"):
+        if not df.empty:
+            cols = [c for c in ['Fecha','Tipo','Descripcion','Ticker','Cantidad','Precio'] if c in df.columns]
+            st.dataframe(df[cols].sort_values(by="Fecha", ascending=False), use_container_width=True)
 
 else:
-    st.info("No hay datos. Añade una operación.")
+    st.info("Sin datos.")
