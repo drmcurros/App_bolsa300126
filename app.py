@@ -50,8 +50,7 @@ with st.sidebar:
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
         ticker = st.text_input("Ticker (ej. AAPL)").upper()
         
-        # NOTA: Hemos quitado el campo manual de "Descripción"
-        # Se buscará solo en internet
+        # Buscador automático de nombre (oculto)
         
         moneda = st.selectbox("Moneda", ["EUR", "USD"])
         
@@ -70,11 +69,10 @@ with st.sidebar:
                 fecha_completa = datetime.combine(fecha_op, hora_op).isoformat()
                 
                 # --- AUTO-COMPLETADO DE NOMBRE ---
-                nombre_empresa = ticker # Por defecto usamos el ticker si falla internet
+                nombre_empresa = ticker 
                 try:
                     with st.spinner(f"Buscando nombre de {ticker} en internet..."):
                         info_stock = yf.Ticker(ticker).info
-                        # Intentamos coger el nombre largo, si no el corto
                         nombre_empresa = info_stock.get('longName') or info_stock.get('shortName') or ticker
                 except Exception as e:
                     st.warning(f"No se pudo encontrar el nombre oficial. Se usará {ticker}.")
@@ -82,7 +80,7 @@ with st.sidebar:
                 record = {
                     "Tipo": tipo,
                     "Ticker": ticker,
-                    "Descripcion": nombre_empresa, # Aquí va el nombre automático
+                    "Descripcion": nombre_empresa, 
                     "Moneda": moneda,
                     "Cantidad": float(dinero_total),
                     "Precio": float(precio_accion),
@@ -104,7 +102,7 @@ except: data = []
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # Rellenar columnas
+    # Rellenar columnas numéricas
     for col in ["Cantidad", "Precio", "Comision"]:
         if col not in df.columns: df[col] = 0.0
         else: df[col] = df[col].fillna(0.0)
@@ -115,9 +113,18 @@ if data:
     
     for i, row in df.iterrows():
         tipo = row.get('Tipo')
-        tick = row.get('Ticker')
-        # Usamos la descripción guardada en Airtable
-        desc = row.get('Descripcion', tick) 
+        tick = str(row.get('Ticker', '')) # Forzamos a texto siempre
+        
+        # --- CORRECCIÓN DEL ERROR AQUÍ ---
+        # 1. Obtenemos el valor crudo
+        raw_desc = row.get('Descripcion')
+        
+        # 2. Si está vacío o es un error (NaN), usamos el Ticker
+        if pd.isna(raw_desc) or not raw_desc:
+            desc = tick
+        else:
+            # 3. Forzamos a que sea texto siempre
+            desc = str(raw_desc)
         
         dinero_operacion = row.get('Cantidad', 0)
         precio_momento = row.get('Precio', 1)
@@ -133,7 +140,8 @@ if data:
             if tick not in cartera:
                 cartera[tick] = {'acciones': 0, 'desc': desc, 'moneda': moneda}
             cartera[tick]['acciones'] += num_acciones
-            # Actualizamos descripción por si ha mejorado
+            
+            # Ahora la comparación es segura porque ambos son texto
             if len(desc) > len(cartera[tick]['desc']): 
                 cartera[tick]['desc'] = desc
             
@@ -185,11 +193,10 @@ if data:
         )
     
     with st.expander("📜 Historial Detallado"):
-        # Mostramos también la columna Descripcion en el historial
-        cols_orden = ['Fecha', 'Tipo', 'Descripcion', 'Ticker', 'Cantidad', 'Precio', 'Moneda']
-        # Filtramos solo las columnas que existen
-        cols_existentes = [c for c in cols_orden if c in df.columns]
-        st.dataframe(df[cols_existentes].sort_values(by="Fecha", ascending=False), use_container_width=True)
+        # Mostramos columnas clave que existan
+        cols_posibles = ['Fecha', 'Tipo', 'Descripcion', 'Ticker', 'Cantidad', 'Precio', 'Moneda']
+        cols_finales = [c for c in cols_posibles if c in df.columns]
+        st.dataframe(df[cols_finales].sort_values(by="Fecha", ascending=False), use_container_width=True)
 
 else:
     st.info("No hay datos. Añade una operación.")
