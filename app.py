@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V7.4 (Logos Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V7.5 (Métricas Clásicas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -42,17 +42,9 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
         return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
 
-# --- NUEVA LÓGICA DE LOGOS (DIRECTA) ---
+# --- LÓGICA DE LOGOS (V7.4) ---
 def get_logo_url(ticker):
-    """
-    En lugar de preguntar a Yahoo (que falla mucho), construimos la URL directa
-    al servidor de imágenes de Financial Modeling Prep.
-    Funciona para el 99% de acciones (ej. AAPL, TSLA, etc).
-    """
-    # Limpiamos el ticker por si acaso (algunos servicios prefieren '.' o '-')
-    clean_ticker = ticker.replace(".MC", "") # Ajuste para algunas españolas si fallan
-    
-    # URL Directa de FMP (Rápida y fiable)
+    clean_ticker = ticker.replace(".MC", "") 
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
 def get_stock_data_fmp(ticker):
@@ -152,187 +144,3 @@ with st.sidebar:
                 c1, c2 = st.columns(2)
                 dinero_total = c1.number_input("Importe Total", min_value=0.0, step=10.0)
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
-                comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-                
-                st.markdown("---")
-                st.write(f"📆 **Fecha ({mi_zona}):**")
-                ahora_local = datetime.now(ZoneInfo(mi_zona))
-                
-                cd, ct = st.columns(2)
-                f_in = cd.date_input("Día", value=ahora_local, key=f"d_{st.session_state.reset_seed}")
-                h_in = ct.time_input("Hora", value=ahora_local, key=f"t_{st.session_state.reset_seed}")
-                
-                if st.form_submit_button("🔍 Validar y Guardar"):
-                    if ticker and dinero_total > 0:
-                        nom, pre = None, 0.0
-                        with st.spinner("Consultando precio..."):
-                            nom, pre = get_stock_data_fmp(ticker)
-                            if not nom: nom, pre = get_stock_data_yahoo(ticker)
-                        
-                        if desc_manual: nom = desc_manual
-                        if not nom: nom = ticker
-                        if precio_manual > 0: pre = precio_manual
-                        if not pre: pre = 0.0
-
-                        dt_final = datetime.combine(f_in, h_in)
-                        datos = {
-                            "Tipo": tipo, "Ticker": ticker, "Descripcion": nom, 
-                            "Moneda": moneda, "Cantidad": float(dinero_total),
-                            "Precio": float(pre), "Comision": float(comision),
-                            "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
-                        }
-                        
-                        if pre > 0: guardar_en_airtable(datos)
-                        else:
-                            st.session_state.pending_data = datos
-                            st.rerun()
-        else:
-            st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
-            c_si, c_no = st.columns(2)
-            if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
-            if c_no.button("❌ Revisar"): 
-                st.session_state.pending_data = None
-                st.rerun()
-
-# --- CÁLCULOS ---
-if not df.empty:
-    df_filtrado = df.copy()
-    if año_seleccionado != "Todos los años":
-        df_filtrado = df[df['Año'] == int(año_seleccionado)]
-        st.info(f"Visualizando datos de: {año_seleccionado}")
-    else:
-        st.info("Visualizando acumulado histórico.")
-
-    for col in ["Cantidad", "Precio", "Comision"]:
-        df_filtrado[col] = pd.to_numeric(df_filtrado.get(col, 0.0), errors='coerce').fillna(0.0)
-    
-    cartera = {}
-    total_dividendos = 0.0 
-    total_comisiones = 0.0
-    pnl_global_cerrado = 0.0 
-
-    for i, row in df_filtrado.sort_values(by="Fecha_dt").iterrows():
-        tipo = row.get('Tipo')
-        tick = str(row.get('Ticker', '')).strip()
-        desc = str(row.get('Descripcion', tick)).strip() or tick
-        dinero = float(row.get('Cantidad', 0))
-        precio = float(row.get('Precio', 1))
-        if precio <= 0: precio = 1
-        mon = row.get('Moneda', 'EUR')
-        comi = float(row.get('Comision', 0))
-        
-        fx = get_exchange_rate_now(mon, MONEDA_BASE)
-        
-        dinero_eur = dinero * fx
-        acciones_op = dinero / precio 
-        total_comisiones += (comi * fx)
-
-        if tick not in cartera:
-            cartera[tick] = {
-                'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 
-                'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon
-            }
-
-        if tipo == "Compra":
-            cartera[tick]['acciones'] += acciones_op
-            cartera[tick]['coste_total_eur'] += dinero_eur
-            if cartera[tick]['acciones'] > 0:
-                cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
-            if len(desc) > len(cartera[tick]['desc']): cartera[tick]['desc'] = desc
-
-        elif tipo == "Venta":
-            coste_proporcional = acciones_op * cartera[tick]['pmc']
-            beneficio_operacion = dinero_eur - coste_proporcional
-            cartera[tick]['pnl_cerrado'] += beneficio_operacion
-            pnl_global_cerrado += beneficio_operacion
-            cartera[tick]['acciones'] -= acciones_op
-            cartera[tick]['coste_total_eur'] -= coste_proporcional 
-            if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
-
-        elif tipo == "Dividendo":
-            total_dividendos += dinero_eur
-
-    # --- TABLA Y VALORACIÓN ONLINE ---
-    tabla_final = []
-    saldo_invertido_total = 0 
-    fx_usd_now = get_exchange_rate_now("USD", "EUR")
-
-    with st.spinner("Conectando con mercados..."):
-        for t, info in cartera.items():
-            if info['acciones'] > 0.001 or abs(info['pnl_cerrado']) > 0.01:
-                saldo_vivo = info['coste_total_eur']
-                saldo_invertido_total += saldo_vivo
-                
-                rentabilidad_pct = 0.0
-                precio_mercado_str = "0.00"
-                logo_url = get_logo_url(t) # URL DIRECTA AHORA
-                
-                if info['acciones'] > 0.001:
-                    _, p_now = get_stock_data_fmp(t)
-                    if not p_now: _, p_now = get_stock_data_yahoo(t)
-                    
-                    if p_now:
-                        moneda_act = info['moneda_origen']
-                        fx_act = 1.0
-                        if moneda_act == "USD": fx_act = fx_usd_now
-                        precio_actual_eur = p_now * fx_act
-                        precio_mercado_str = f"{p_now:.2f} {moneda_act}"
-                        if info['pmc'] > 0:
-                            rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
-
-                tabla_final.append({
-                    "Logo": logo_url,
-                    "Empresa": info['desc'],
-                    "Ticker": t,
-                    "Acciones": info['acciones'],
-                    "PMC": info['pmc'],
-                    "Precio Mercado": precio_mercado_str,
-                    "Saldo Invertido": saldo_vivo,
-                    "Bº/P (Cerrado)": info['pnl_cerrado'],
-                    "% Latente": rentabilidad_pct
-                })
-
-    beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("💰 BENEFICIO NETO", f"{beneficio_neto_total:,.2f} €", delta="Limpio")
-    m2.metric("Bº/P Trading (Cerrado)", f"{pnl_global_cerrado:,.2f} €")
-    m3.metric("Dividendos", f"{total_dividendos:,.2f} €")
-    m4.metric("Comisiones", f"-{total_comisiones:,.2f} €")
-    
-    st.divider()
-    
-    if tabla_final:
-        df_show = pd.DataFrame(tabla_final)
-        st.subheader(f"📊 Detalle por Acción ({año_seleccionado})")
-        
-        cfg_columnas = {
-            "Logo": st.column_config.ImageColumn("Logo", width="small"), # IMAGEN CONFIGURADA
-            "Empresa": st.column_config.TextColumn("Empresa"),
-            "Ticker": st.column_config.TextColumn("Ticker"),
-            "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
-            "PMC": st.column_config.NumberColumn("PMC", help="Coste medio", format="%.2f €"),
-            "Precio Mercado": st.column_config.TextColumn("Precio Mercado"),
-            "Saldo Invertido": st.column_config.NumberColumn("Invertido", help="Coste vivo", format="%.2f €"),
-            "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", help="Ganancia Trading", format="%.2f €"),
-            "% Latente": st.column_config.NumberColumn("% Latente", help="Si vendieras ahora", format="%.2f %%")
-        }
-
-        def color_rentabilidad(val):
-            color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
-            return f'color: {color}; font-weight: bold;'
-
-        st.dataframe(
-            df_show.style.map(color_rentabilidad, subset=['Bº/P (Cerrado)', '% Latente'])
-                         .format({'% Latente': "{:.2%}"}), 
-            column_config=cfg_columnas,
-            use_container_width=True, 
-            hide_index=True
-        )
-    
-    with st.expander("📝 Ver Histórico"):
-        cols = [c for c in ['Fecha_str','Tipo','Ticker','Cantidad','Precio','Moneda'] if c in df_filtrado.columns]
-        st.dataframe(df_filtrado[cols].sort_values(by="Fecha_str", ascending=False), use_container_width=True)
-
-else:
-    st.info("Sin datos.")
