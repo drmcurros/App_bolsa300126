@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from pyairtable import Api
-from datetime import datetime, time
+from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Híbrido", layout="wide") 
+st.set_page_config(page_title="Gestor Automático", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- FUNCIONES ---
@@ -41,7 +41,7 @@ try:
     table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
 except: st.stop()
 
-st.title("💼 Mi Cartera (Control Total)")
+st.title("💼 Mi Cartera (Fecha Auto)")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -50,8 +50,7 @@ with st.sidebar:
         tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
         ticker = st.text_input("Ticker (ej. AAPL)").upper()
         
-        # --- CAMBIO AQUÍ: Campo manual recuperado ---
-        desc_manual = st.text_input("Descripción (Opcional)", help="Escribe el nombre si quieres. Si lo dejas vacío, intentaré buscarlo en internet.")
+        desc_manual = st.text_input("Descripción (Opcional)", help="Si lo dejas vacío, se buscará en internet.")
         
         moneda = st.selectbox("Moneda", ["EUR", "USD"])
         
@@ -60,32 +59,24 @@ with st.sidebar:
         precio_accion = col_precio.number_input("Precio Cotización", min_value=0.0, format="%.2f")
         comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
         
-        c_date, c_time = st.columns(2)
-        fecha_op = c_date.date_input("Fecha")
-        hora_op = c_time.time_input("Hora", value=time(9, 30))
+        # NOTA: Ya no hay campos de fecha/hora aquí.
         
         if st.form_submit_button("Guardar Operación"):
             if ticker and dinero_total > 0:
-                fecha_completa = datetime.combine(fecha_op, hora_op).isoformat()
+                # --- FECHA AUTOMÁTICA AQUÍ ---
+                fecha_completa = datetime.now().isoformat()
+                # -----------------------------
                 
-                # --- LÓGICA DE NOMBRE ---
-                nombre_final = ticker # Por defecto, el Ticker
-                
-                # 1. ¿El usuario escribió algo? -> Usamos eso (Manda el humano)
+                nombre_final = ticker 
                 if desc_manual:
                     nombre_final = desc_manual
                 else:
-                    # 2. Si está vacío -> Intentamos buscar en internet (Intenta el robot)
                     try:
-                        with st.spinner(f"Intentando buscar nombre de {ticker}..."):
+                        with st.spinner(f"Buscando nombre de {ticker}..."):
                             info = yf.Ticker(ticker).info
-                            # Buscamos cualquier campo que parezca un nombre
                             encontrado = info.get('longName') or info.get('shortName')
-                            if encontrado:
-                                nombre_final = encontrado
-                    except:
-                        # Si falla (por bloqueo de Yahoo), se queda con el Ticker en silencio
-                        pass
+                            if encontrado: nombre_final = encontrado
+                    except: pass
                 
                 record = {
                     "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
@@ -95,7 +86,7 @@ with st.sidebar:
                 }
                 try:
                     table.create(record)
-                    st.success(f"Guardado: {ticker} como '{nombre_final}'")
+                    st.success(f"Guardado: {ticker} ({datetime.now().strftime('%H:%M:%S')})")
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
 
@@ -106,7 +97,6 @@ except: data = []
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     
-    # Rellenar numéricos
     for col in ["Cantidad", "Precio", "Comision"]:
         df[col] = df.get(col, 0.0)
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -118,7 +108,6 @@ if data:
     for i, row in df.iterrows():
         tipo = row.get('Tipo')
         
-        # Limpieza de textos
         tick = str(row.get('Ticker', 'UNKNOWN')).strip()
         raw_desc = row.get('Descripcion')
         if pd.isna(raw_desc) or raw_desc is None: desc = tick
@@ -143,7 +132,6 @@ if data:
             
             cartera[tick]['acciones'] += num_acciones
             
-            # Actualizar nombre solo si el nuevo es más largo (ej. "Tesla" gana a "TSLA")
             if len(str(desc)) > len(str(cartera[tick]['desc'])): 
                 cartera[tick]['desc'] = str(desc)
             
