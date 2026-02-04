@@ -31,8 +31,7 @@ try:
 except Exception as e:
     st.error(f"Error crítico de configuración Airtable: {e}")
     st.stop()
-
-# --- FUNCIONES DE AUTENTICACIÓN ---
+    # --- FUNCIONES DE AUTENTICACIÓN ---
 def get_all_users():
     try:
         records = table_users.all()
@@ -165,8 +164,7 @@ def generar_pdf_historial(dataframe, titulo):
             pdf.cell(ancho, 10, valor, 1, 0, 'C')
         pdf.ln()
     return pdf.output(dest='S').encode('latin-1')
-
-# --- APP INICIO ---
+    # --- APP INICIO ---
 if not login_system(): st.stop()
 
 c_user, c_logout = st.columns([6, 1])
@@ -238,12 +236,10 @@ with st.sidebar:
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 
-                # --- VUELTA AL INPUT CLÁSICO (V34.0) ---
                 c1, c2 = st.columns(2)
                 dinero_total = c1.number_input("Importe Total", min_value=0.00, step=10.0)
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-                # ---------------------------------------
                 
                 st.markdown("---")
                 dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(mi_zona))), st.time_input("Hora", datetime.now(ZoneInfo(mi_zona))))
@@ -487,7 +483,6 @@ else:
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 
-                # --- NUEVA COLUMNA: VALOR ACTUAL ---
                 val_mercado_str = f"{val:,.2f} €" if i['moneda_origen'] == 'EUR' else f"{val:,.2f} € ({(val/get_exchange_rate_now(i['moneda_origen'])):.2f} {i['moneda_origen']})"
                 
                 tabla.append({
@@ -512,7 +507,6 @@ else:
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row"
         )
         if len(st.session_state.get("df_show_selection", {}).get("rows", [])):
-             # Fix selection logic if needed
              pass
     
     st.divider()
