@@ -7,10 +7,12 @@ import numpy as np
 from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from fpdf import FPDF 
+from fpdf import FPDF
+# NUEVA LIBRERÍA PARA TRADUCCIÓN
+from deep_translator import GoogleTranslator 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V29.0 (Velas Dinámicas)", layout="wide") 
+st.set_page_config(page_title="Gestor V30.0 (Español)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -39,6 +41,15 @@ def check_password():
         except: st.error("Revisa Secrets")
     return False
 
+def traducir_texto(texto):
+    """Traduce texto de inglés a español usando Google Translate (sin API key)"""
+    if not texto or texto == "Sin descripción.": return texto
+    try:
+        # Traduce trozos de hasta 5000 caracteres
+        return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
+    except:
+        return texto # Si falla, devuelve el original
+
 @st.cache_data(ttl=300) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
     if from_curr == to_curr: return 1.0
@@ -57,7 +68,12 @@ def get_stock_data_fmp(ticker):
         response = requests.get(url, timeout=3)
         data = response.json()
         if data and len(data) > 0:
-            return data[0].get('companyName'), data[0].get('price'), data[0].get('description')
+            nombre = data[0].get('companyName')
+            precio = data[0].get('price')
+            desc_en = data[0].get('description')
+            # Traducimos la descripción
+            desc_es = traducir_texto(desc_en)
+            return nombre, precio, desc_es
         return None, None, None
     except: return None, None, None
 
@@ -67,8 +83,11 @@ def get_stock_data_yahoo(ticker):
         precio = stock.fast_info.last_price
         info = stock.info
         nombre = info.get('longName') or info.get('shortName') or ticker
-        desc = info.get('longBusinessSummary') or "Descripción no disponible en Yahoo."
-        if precio: return nombre, precio, desc
+        desc_en = info.get('longBusinessSummary') or "Sin descripción."
+        # Traducimos la descripción
+        desc_es = traducir_texto(desc_en)
+        
+        if precio: return nombre, precio, desc_es
     except: 
         try:
             hist = stock.history(period="1d")
@@ -377,13 +396,12 @@ if st.session_state.ticker_detalle:
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
     
-    # --- LÓGICA DE ANCHO DINÁMICO DE VELA (NUEVO V29.0) ---
-    ancho_vela = 3 # Default 1 Año
+    # Ancho dinámico de vela
+    ancho_vela = 3 
     if label_tiempo == "1 Mes": ancho_vela = 20
     elif label_tiempo == "6 Meses": ancho_vela = 6
     elif label_tiempo == "1 Año": ancho_vela = 3
-    else: ancho_vela = 1 # 5 Años o Todo
-    # -----------------------------------------------------
+    else: ancho_vela = 1
 
     indicadores = c_ind.multiselect(
         "Indicadores Técnicos",
@@ -449,19 +467,6 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # STATS
-        stat_max = historia['Close'].max()
-        stat_min = historia['Close'].min()
-        stat_avg = historia['Close'].mean()
-        last_date = historia['Date'].max()
-        
-        df_price_stats = pd.DataFrame([
-            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
-            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
-            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
-        ])
-        df_price_stats['Date'] = last_date
-
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
@@ -477,7 +482,6 @@ if st.session_state.ticker_detalle:
                 y2='High',
                 color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
             )
-            # AQUÍ APLICAMOS EL ANCHO DINÁMICO
             bar = base.mark_bar(width=ancho_vela).encode(
                 y='Open',
                 y2='Close',
@@ -570,7 +574,6 @@ if st.session_state.ticker_detalle:
                 alt.value("#FF0000") 
             )
             
-            # APLICAMOS ANCHO DINÁMICO TAMBIÉN AL VOLUMEN
             vol_bar = base.mark_bar(width=ancho_vela).encode(
                 y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')),
                 color=vol_color
