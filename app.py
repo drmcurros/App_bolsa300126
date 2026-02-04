@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.11 (Tooltip Unificado)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.12 (Precisión Total)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -383,34 +383,47 @@ if st.session_state.ticker_detalle:
 
     st.subheader("📈 Gráfico")
     if not hist.empty:
-        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
+        # --- FIX V32.12: SELECTOR GLOBAL PARA ALTA PRECISIÓN ---
+        # "nearest=True" busca el dato más cercano al eje X (Date)
+        hover = alt.selection_point(
+            fields=['Date'], 
+            nearest=True, 
+            on='mouseover', 
+            empty=False,
+            clear='mouseout'
+        )
+
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
-        if type_g == "Línea": main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
+        
+        # Gráfico Principal (Línea o Velas)
+        if type_g == "Línea":
+            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
         else:
             rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             main = rule + bar
         
-        # --- TOOLTIPS UNIFICADOS (V32.11) ---
-        tooltips_completos = [
-            alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
-            alt.Tooltip('Close', title='Precio', format=',.2f'),
-            alt.Tooltip('Volume', title='Volumen', format=',')
-        ]
+        # Capa invisible para capturar el ratón (asegura precisión)
+        points = main.mark_point().encode(opacity=alt.value(0)).add_params(hover)
 
-        layers = [
-            main, 
-            base.mark_point(opacity=0).add_params(hover), 
-            base.mark_rule(color='black', strokeDash=[4,4]).encode(
-                opacity=alt.condition(hover, alt.value(1), alt.value(0)), 
-                tooltip=tooltips_completos
-            )
-        ]
-        
+        # Regla Vertical (Negra)
+        # Se activa solo cuando el selector "hover" tiene un dato
+        rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(
+            opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+            tooltip=[
+                alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
+                alt.Tooltip('Close', title='Precio', format=',.2f'),
+                alt.Tooltip('Volume', title='Volumen', format=',')
+            ]
+        ).transform_filter(hover) # IMPORTANTE: Filtra solo el dato seleccionado para mostrar tooltip único
+
+        # Stats Lines
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
         text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
-        layers.append(rules_stats); layers.append(text_stats)
+        
+        layers = [main, points, rule_hover, rules_stats, text_stats]
 
+        # Puntos Compra/Venta
         movs_raw = info.get('movimientos', [])
         if movs_raw:
             df_m_chart = pd.DataFrame(movs_raw)
@@ -431,7 +444,12 @@ if st.session_state.ticker_detalle:
         chart_p = alt.layer(*layers).properties(height=350, width=800)
         
         if "Volumen" in inds:
-            vol = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800)
+            vol = base.mark_bar(width=width_map[label_t]).encode(
+                y=alt.Y('Volume', axis=alt.Axis(format='~s')), 
+                color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")),
+                opacity=alt.condition(hover, alt.value(1), alt.value(0.5)) # Efecto visual al pasar ratón
+            ).properties(height=100, width=800).add_params(hover) # Vinculamos el mismo hover
+            
             final = alt.vconcat(chart_p, vol).resolve_scale(x='shared')
         else: final = chart_p
         
