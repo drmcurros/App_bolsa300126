@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.14 (Fix AttributeError)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.15 (Velas Finas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -333,7 +333,9 @@ if st.session_state.ticker_detalle:
     c_time, c_ind = st.columns([1, 3])
     label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
     periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
-    width_map = {"1 Mes": 20, "6 Meses": 6, "1 Año": 3, "5 Años": 1, "Todo": 1}
+    # --- AJUSTE V32.15: VELAS MÁS FINAS ---
+    width_map = {"1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
+    # --------------------------------------
     inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
     sma_p = 50
     if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
@@ -399,9 +401,8 @@ if st.session_state.ticker_detalle:
             alt.Tooltip('Volume', title='Volumen', format=',')
         ]
         
-        # --- FIX V32.14: USO DE 'base' EN LUGAR DE 'main' PARA mark_point ---
         points = base.mark_point().encode(
-            y=alt.Y('Close', scale=alt.Scale(zero=False)), # Importante mantener la escala del eje Y
+            y=alt.Y('Close', scale=alt.Scale(zero=False)), 
             opacity=alt.value(0),
             tooltip=tooltips_completos
         ).add_params(hover)
