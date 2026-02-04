@@ -3,14 +3,14 @@ import pandas as pd
 import yfinance as yf
 import requests
 import altair as alt
-import numpy as np # Necesario para la línea de tendencia
+import numpy as np 
 from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V25.0 (Indicadores Pro)", layout="wide") 
+st.set_page_config(page_title="Gestor V25.1 (Fix Volumen)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -370,7 +370,6 @@ if st.session_state.ticker_detalle:
         st.title(f"{info.get('desc', t)} ({t})")
         st.caption("Ficha detallada del activo")
 
-    # --- INDICADORES TÉCNICOS ---
     st.write("⚙️ **Configuración del Gráfico**")
     c_time, c_ind = st.columns([1, 3])
     
@@ -378,11 +377,10 @@ if st.session_state.ticker_detalle:
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
     
-    # NUEVO: Selector de Indicadores
     indicadores = c_ind.multiselect(
-        "Indicadores Técnicos (Opcionales)",
+        "Indicadores Técnicos",
         ["Volumen", "Media Móvil (SMA 50)", "Soportes/Resistencias", "Línea de Tendencia"],
-        default=[] # Por defecto limpio
+        default=[]
     )
     
     tipo_grafico = st.radio("Estilo de Precio", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
@@ -397,28 +395,25 @@ if st.session_state.ticker_detalle:
             historia = ticker_obj.history(period=periodo_api)
             historia = historia.reset_index()
             historia['Date'] = pd.to_datetime(historia['Date']).dt.date
+            # Limpieza para evitar errores en volumen
+            historia['Volume'] = pd.to_numeric(historia['Volume'], errors='coerce').fillna(0)
         except: pass
 
     # --- CÁLCULO DE INDICADORES ---
     if not historia.empty:
-        # 1. Media Móvil 50
         if "Media Móvil (SMA 50)" in indicadores:
             historia['SMA_50'] = historia['Close'].rolling(window=50).mean()
         
-        # 2. Soportes y Resistencias (Max/Min del periodo)
         val_max = historia['High'].max()
         val_min = historia['Low'].min()
         
-        # 3. Línea de Tendencia (Regresión Lineal Simple)
-        trend_df = pd.DataFrame()
         if "Línea de Tendencia" in indicadores:
-            # Convertir fecha a ordinal para regresión
             historia['Date_Ord'] = pd.to_datetime(historia['Date']).map(datetime.toordinal)
             x = historia['Date_Ord'].values
             y = historia['Close'].values
-            # Ajuste lineal (y = mx + b)
-            m, b = np.polyfit(x, y, 1)
-            historia['Trend'] = m * x + b
+            if len(x) > 1:
+                m, b = np.polyfit(x, y, 1)
+                historia['Trend'] = m * x + b
 
     m1, m2, m3, m4 = st.columns(4)
     acciones_activas = info.get('acciones', 0)
@@ -442,7 +437,7 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # STATS
+        # 1. ESTADÍSTICAS (MAX/MIN/AVG)
         stat_max = historia['Close'].max()
         stat_min = historia['Close'].min()
         stat_avg = historia['Close'].mean()
@@ -458,7 +453,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # --- CAPAS PRINCIPALES (PRECIO) ---
+        # 2. CAPA PRECIO (VELAS O LÍNEA)
         grafico_base = None
         if tipo_grafico == "Línea":
             grafico_base = base.mark_line(color='#29b5e8').encode(
@@ -477,41 +472,8 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # --- CAPAS OPCIONALES (INDICADORES) ---
-        capas_extra = []
-        
-        # 1. Volumen (Capa independiente o compartida con escala dual)
-        # Para simplificar en Altair, lo pondremos como barras en la parte inferior con opacidad
-        if "Volumen" in indicadores:
-            vol = base.mark_bar(opacity=0.3, color='gray').encode(
-                y=alt.Y('Volume', axis=alt.Axis(title='Volumen', orient='right')),
-            )
-            capas_extra.append(vol)
-
-        # 2. SMA 50
-        if "Media Móvil (SMA 50)" in indicadores:
-            sma = base.mark_line(color='orange', strokeDash=[2,2]).encode(
-                y='SMA_50', tooltip=[alt.Tooltip('SMA_50', title='SMA 50', format='.2f')]
-            )
-            capas_extra.append(sma)
-
-        # 3. Línea de Tendencia
-        if "Línea de Tendencia" in indicadores:
-            trend = base.mark_line(color='purple', strokeWidth=2).encode(
-                y='Trend', tooltip=[alt.Tooltip('Trend', title='Tendencia', format='.2f')]
-            )
-            capas_extra.append(trend)
-
-        # 4. Soportes y Resistencias
-        if "Soportes/Resistencias" in indicadores:
-            res_line = base.mark_rule(color='green', strokeDash=[5,5]).encode(y=alt.datum(val_max))
-            sup_line = base.mark_rule(color='red', strokeDash=[5,5]).encode(y=alt.datum(val_min))
-            capas_extra.append(res_line)
-            capas_extra.append(sup_line)
-
-        # --- CAPAS ESTÁNDAR (INTERACTIVIDAD) ---
+        # 3. INTERACTIVIDAD (CROSSHAIR + TOOLTIP)
         points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
-        
         tooltips = [
             alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
             alt.Tooltip('Close', title='Cierre', format='.2f'),
@@ -522,6 +484,7 @@ if st.session_state.ticker_detalle:
             tooltip=tooltips
         )
 
+        # 4. CAPAS DE ESTADÍSTICAS
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
             y='Val', color=alt.Color('Color', scale=None)
         )
@@ -529,6 +492,7 @@ if st.session_state.ticker_detalle:
             x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
         )
 
+        # 5. CAPAS DE OPERACIONES (TRIÁNGULOS)
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -558,19 +522,53 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        # COMBINAMOS TODO CON CAPAS EXTRA
-        chart_final = (grafico_base + points + rule_vertical + rules_stats + text_stats + capa_compras + capa_ventas)
+        # --- ENSAMBLAJE FINAL DEL GRÁFICO (FIX V25.1) ---
         
-        # Añadir indicadores seleccionados
-        for capa in capas_extra:
-            chart_final = chart_final + capa
+        # Grupo 1: Capas relacionadas con el PRECIO (Eje Y Izquierdo)
+        layers_precio = [
+            grafico_base, 
+            points, 
+            rule_vertical, 
+            rules_stats, 
+            text_stats, 
+            capa_compras, 
+            capa_ventas
+        ]
 
-        # Resolver escalas independientes si hay volumen (eje derecho)
+        # Añadir indicadores de precio si existen
+        if "Media Móvil (SMA 50)" in indicadores:
+            sma = base.mark_line(color='orange', strokeDash=[2,2]).encode(
+                y='SMA_50', tooltip=[alt.Tooltip('SMA_50', title='SMA 50', format='.2f')]
+            )
+            layers_precio.append(sma)
+
+        if "Línea de Tendencia" in indicadores and 'Trend' in historia.columns:
+            trend = base.mark_line(color='purple', strokeWidth=2).encode(
+                y='Trend', tooltip=[alt.Tooltip('Trend', title='Tendencia', format='.2f')]
+            )
+            layers_precio.append(trend)
+
+        if "Soportes/Resistencias" in indicadores:
+            res_line = base.mark_rule(color='green', strokeDash=[5,5]).encode(y=alt.datum(val_max))
+            sup_line = base.mark_rule(color='red', strokeDash=[5,5]).encode(y=alt.datum(val_min))
+            layers_precio.append(res_line)
+            layers_precio.append(sup_line)
+
+        # Combinamos todo lo que es PRECIO en un solo gráfico
+        chart_precio = alt.layer(*layers_precio)
+
+        # Grupo 2: Capa de VOLUMEN (Eje Y Derecho)
         if "Volumen" in indicadores:
-            st.altair_chart(chart_final.resolve_scale(y='independent'), use_container_width=True)
+            vol = base.mark_bar(opacity=0.3, color='#CCCCCC').encode(
+                y=alt.Y('Volume', axis=alt.Axis(title='Volumen', orient='right', grid=False)),
+                # Quitamos tooltip del volumen para no ensuciar la cruz del precio
+            )
+            # FUSIONAMOS CON ESCALAS INDEPENDIENTES
+            chart_final = alt.layer(chart_precio, vol).resolve_scale(y='independent')
         else:
-            st.altair_chart(chart_final, use_container_width=True)
-            
+            chart_final = chart_precio
+
+        st.altair_chart(chart_final, use_container_width=True)
         st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
         
     else:
