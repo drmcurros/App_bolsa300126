@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V19.0 (Gráfico ROI Perfecto)", layout="wide") 
+st.set_page_config(page_title="Gestor V19.1 (Fix NameError)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -221,11 +221,15 @@ with st.sidebar:
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         
-                        nom, pre = None, 0.0
+                        # --- CORRECCIÓN: Inicializar variables antes del bloque ---
+                        nom_api = None
+                        pre_api = 0.0
+                        # --------------------------------------------------------
+
                         with st.spinner(f"Buscando datos de {ticker}..."):
-                            nom, pre, _ = get_stock_data_fmp(ticker)
-                            if not nom: 
-                                nom, pre, _ = get_stock_data_yahoo(ticker)
+                            nom_api, pre_api, _ = get_stock_data_fmp(ticker)
+                            if not nom_api: 
+                                nom_api, pre_api, _ = get_stock_data_yahoo(ticker)
                         
                         nombre_final = ""
                         if desc_manual:
@@ -510,44 +514,49 @@ else:
         if not df_roi.empty:
             df_roi.set_index('Fecha', inplace=True)
             df_roi_w = df_roi.resample('W').sum().fillna(0)
+            
             df_roi_w['Cum_Profit'] = df_roi_w['Delta_Profit'].cumsum()
             df_roi_w['Cum_Invest'] = df_roi_w['Delta_Invest'].cumsum()
-            df_roi_w['ROI_Pct'] = df_roi_w.apply(lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1)
+            
+            df_roi_w['ROI_Pct'] = df_roi_w.apply(
+                lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1
+            )
             df_roi_w = df_roi_w.reset_index()
 
-            # --- LÓGICA DEL GRADIENTE EXACTO ---
+            # LÓGICA DEL GRADIENTE EXACTO
             y_min = df_roi_w['ROI_Pct'].min()
             y_max = df_roi_w['ROI_Pct'].max()
             
-            # Calculamos el punto de corte (offset) donde Y=0
-            # Altair usa 0 como tope superior y 1 como tope inferior en el eje Y? No, depende de la definición.
-            # En Gradient: 0 es el inicio (abajo si y1=1, y2=0) y 1 el final.
-            # Rango total = max - min.
-            # Distancia de min a 0 = abs(min).
-            # Offset = abs(min) / (max - min).
-            
             stops = []
-            if y_min >= 0: # Todo positivo -> Todo Verde
+            if y_min >= 0:
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
-            elif y_max <= 0: # Todo negativo -> Todo Rojo
+            elif y_max <= 0:
                 stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-            else: # Cruza el cero -> Gradiente Cortado
+            else:
                 range_total = y_max - y_min
-                offset_zero = abs(y_min) / range_total if range_total != 0 else 0.5
+                # En Altair el gradiente vertical va de 1 (y_min) a 0 (y_max)
+                offset_zero = abs(y_max) / range_total
+                
+                # Ajuste para coordenada y2=0 (arriba) y1=1 (abajo) en la definicion de Altair
+                # Si usamos y1=1 (abajo) y2=0 (arriba), el offset 0 es el tope (max) y 1 es el fondo (min)
+                # Queremos que de offset 0 a X sea verde (positivo) y de X a 1 sea rojo (negativo)
+                # El punto cero está a una distancia de y_max desde arriba.
+                # Por tanto, offset = y_max / (y_max - y_min)
+                
                 stops = [
-                    alt.GradientStop(color='#FF0000', offset=0),            # Rojo abajo
-                    alt.GradientStop(color='#FF0000', offset=offset_zero),  # Rojo hasta cero
-                    alt.GradientStop(color='#00C805', offset=offset_zero),  # Verde desde cero
-                    alt.GradientStop(color='#00C805', offset=1)             # Verde arriba
+                    alt.GradientStop(color='#00C805', offset=0),            # Verde Arriba
+                    alt.GradientStop(color='#00C805', offset=offset_zero),  # Verde hasta cero
+                    alt.GradientStop(color='#FF0000', offset=offset_zero),  # Rojo desde cero
+                    alt.GradientStop(color='#FF0000', offset=1)             # Rojo abajo
                 ]
 
             area = alt.Chart(df_roi_w).mark_area(
                 opacity=0.6,
-                line={'color': '#800080', 'strokeWidth': 2}, # Línea Morada
+                line={'color': '#800080', 'strokeWidth': 2},
                 color=alt.Gradient(
                     gradient='linear',
                     stops=stops,
-                    x1=1, x2=1, y1=1, y2=0 # Gradiente Vertical (Abajo -> Arriba)
+                    x1=1, x2=1, y1=0, y2=1 # Eje Y invertido para cuadrar con logica visual (0=Top, 1=Bottom)
                 )
             ).encode(
                 x=alt.X('Fecha:T', title=""),
@@ -572,6 +581,7 @@ else:
 
     with st.spinner("Actualizando panel de acciones..."):
         for t, info in cartera_global.items():
+            
             es_viva = info['acciones'] > 0.001
             tuvo_actividad = abs(info['pnl_cerrado']) > 0.01
             
@@ -618,71 +628,4 @@ else:
                 "Ticker": st.column_config.TextColumn("Ticker"),
                 "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
                 "PMC": st.column_config.NumberColumn("PMC", format="%.2f €"),
-                "Saldo Invertido": st.column_config.NumberColumn("Invertido", format="%.2f €"),
-                "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", format="%.2f €"),
-                "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")
-            },
-            use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row"
-        )
-        
-        if len(event.selection.rows) > 0:
-            idx = event.selection.rows[0]
-            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
-            st.rerun()
-    else:
-        st.info("No hay datos para el periodo seleccionado.")
-
-    st.divider()
-    st.subheader(f"📜 Historial de Órdenes y Dividendos ({año_seleccionado})")
-    
-    if not df.empty:
-        df_historial = df.copy()
-        if año_seleccionado != "Todos los años":
-            df_historial = df_historial[df_historial['Año'] == int(año_seleccionado)]
-        
-        if not df_historial.empty:
-            cols_ver = ['Fecha_str', 'Tipo', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision']
-            cols_ver = [c for c in cols_ver if c in df_historial.columns]
-            df_export = df_historial[cols_ver].sort_values(by='Fecha_str', ascending=False)
-            
-            c_csv, c_pdf = st.columns(2)
-            
-            csv = df_export.to_csv(index=False).encode('utf-8')
-            c_csv.download_button(
-                label="📥 Exportar a Excel (CSV)",
-                data=csv,
-                file_name=f"historial_{año_seleccionado}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            
-            try:
-                pdf_bytes = generar_pdf_historial(df_export, f"Historial {año_seleccionado}")
-                c_pdf.download_button(
-                    label="📄 Exportar a PDF",
-                    data=pdf_bytes,
-                    file_name=f"historial_{año_seleccionado}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            except Exception as e:
-                c_pdf.warning(f"Error generando PDF: {e}")
-
-            def color_rows(row):
-                color = ''
-                if row['Tipo'] == 'Compra':
-                    color = 'color: green'
-                elif row['Tipo'] == 'Venta':
-                    color = 'color: #800020'
-                elif row['Tipo'] == 'Dividendo':
-                    color = 'color: #FF8C00'
-                return [color] * len(row)
-
-            st.dataframe(
-                df_export.style.apply(color_rows, axis=1),
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("No hay operaciones registradas en este periodo.")
+                "Saldo Invertido": st.column_config
