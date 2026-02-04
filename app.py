@@ -8,17 +8,11 @@ from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fpdf import FPDF
+from deep_translator import GoogleTranslator
 import time
 
-# --- INTENTO DE IMPORTAR TRADUCTOR (CON PROTECCIÓN) ---
-try:
-    from deep_translator import GoogleTranslator
-    HAS_TRANSLATOR = True
-except ImportError:
-    HAS_TRANSLATOR = False
-
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.1 (Fix Navegación)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.1 (Fix Tabla)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -101,7 +95,6 @@ def login_system():
 # --- FUNCIONES DATOS ---
 def traducir_texto(texto):
     if not texto or texto == "Sin descripción.": return texto
-    if not HAS_TRANSLATOR: return texto
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
@@ -248,7 +241,7 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
-                st.info("💡 Consejo: Para vender todo, copia el 'Valor Actual' de la tabla.")
+                st.info("💡 Consejo: Para vender todo, introduce el importe exacto invertido.")
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
@@ -510,34 +503,35 @@ else:
                 
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], 
-                    "Valor Actual": val, 
-                    "PMC": i['pmc'],
-                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
+                    "Acciones": i['acciones'], "PMC": i['pmc'],
+                    "Valor": val, "Trading": i['pnl_cerrado'], "% Latente": r_lat
                 })
 
     if tabla:
         df_show = pd.DataFrame(tabla)
-        # --- FIX V32.1: SELECCIÓN ROBUSTA DE FILA ---
-        st.dataframe(
+        # --- FIX V32.1: SELECCIÓN ROBUSTA ---
+        df_show = df_show.reset_index(drop=True) # IMPORTANTE: Limpiar índice
+        
+        event = st.dataframe(
             df_show.style.map(lambda v: 'color: green' if v>0 else 'color: red', subset=['Trading','% Latente']).format({'% Latente':"{:.2%}"}),
             column_config={
                 "Logo": st.column_config.ImageColumn(width="small"), 
-                "Acciones": st.column_config.NumberColumn(format="%.4f"), 
-                "Valor Actual": st.column_config.NumberColumn(format="%.2f €", help="Copia este valor para vender todo"),
-                "Invertido": st.column_config.NumberColumn(format="%.2f €"), 
-                "Trading": st.column_config.NumberColumn(format="%.2f €")
+                "Empresa": st.column_config.TextColumn("Empresa"),
+                "Ticker": st.column_config.TextColumn("Ticker"),
+                "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
+                "PMC": st.column_config.NumberColumn("PMC", format="%.2f €"),
+                "Valor": st.column_config.NumberColumn(format="%.2f €"),
+                "Trading": st.column_config.NumberColumn(format="%.2f €"),
+                "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")
             },
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
-            key="tabla_cartera_main" # Key fija para leer estado
+            key="main_table" # KEY FIJA
         )
         
-        # Leemos el estado directamente para evitar "flakiness"
-        selection = st.session_state.get("tabla_cartera_main", {}).get("selection", {})
-        if selection and selection.get("rows"):
-            selected_idx = selection["rows"][0]
-            ticker_sel = df_show.iloc[selected_idx]["Ticker"]
-            # Solo recargamos si cambia la selección para no resetear
+        if len(event.selection.rows) > 0:
+            idx = event.selection.rows[0]
+            ticker_sel = df_show.iloc[idx]["Ticker"]
+            # CHECK ANTI-BUCLE
             if st.session_state.ticker_detalle != ticker_sel:
                 st.session_state.ticker_detalle = ticker_sel
                 st.rerun()
