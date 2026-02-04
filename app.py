@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V28.0 (Gráfico Limpio)", layout="wide") 
+st.set_page_config(page_title="Gestor V29.0 (Velas Dinámicas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -377,6 +377,14 @@ if st.session_state.ticker_detalle:
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
     
+    # --- LÓGICA DE ANCHO DINÁMICO DE VELA (NUEVO V29.0) ---
+    ancho_vela = 3 # Default 1 Año
+    if label_tiempo == "1 Mes": ancho_vela = 20
+    elif label_tiempo == "6 Meses": ancho_vela = 6
+    elif label_tiempo == "1 Año": ancho_vela = 3
+    else: ancho_vela = 1 # 5 Años o Todo
+    # -----------------------------------------------------
+
     indicadores = c_ind.multiselect(
         "Indicadores Técnicos",
         ["Volumen", "Media Móvil (SMA)", "Soportes/Resistencias", "Línea de Tendencia"],
@@ -441,6 +449,19 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
+        # STATS
+        stat_max = historia['Close'].max()
+        stat_min = historia['Close'].min()
+        stat_avg = historia['Close'].mean()
+        last_date = historia['Date'].max()
+        
+        df_price_stats = pd.DataFrame([
+            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
+            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
+            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
+        ])
+        df_price_stats['Date'] = last_date
+
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
@@ -456,7 +477,8 @@ if st.session_state.ticker_detalle:
                 y2='High',
                 color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
             )
-            bar = base.mark_bar(width=8).encode(
+            # AQUÍ APLICAMOS EL ANCHO DINÁMICO
+            bar = base.mark_bar(width=ancho_vela).encode(
                 y='Open',
                 y2='Close',
                 color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
@@ -503,7 +525,7 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        # Ensamble Precio (SIN INDICADORES FIJOS)
+        # Ensamble Precio
         layers_precio = [grafico_base, points, rule_vertical, capa_compras, capa_ventas]
         
         if "Media Móvil (SMA)" in indicadores:
@@ -540,13 +562,16 @@ if st.session_state.ticker_detalle:
 
         chart_precio = alt.layer(*layers_precio).properties(height=350, width=800)
 
+        # --- CHART VOLUMEN (INFERIOR - SI ACTIVO) ---
         if "Volumen" in indicadores:
             vol_color = alt.condition(
                 "datum.Open < datum.Close", 
                 alt.value("#00C805"), 
                 alt.value("#FF0000") 
             )
-            vol_bar = base.mark_bar().encode(
+            
+            # APLICAMOS ANCHO DINÁMICO TAMBIÉN AL VOLUMEN
+            vol_bar = base.mark_bar(width=ancho_vela).encode(
                 y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')),
                 color=vol_color
             ).properties(height=100, width=800)
@@ -554,6 +579,7 @@ if st.session_state.ticker_detalle:
             vol_rule = base.mark_rule(color='black', strokeDash=[4, 4]).encode(
                 opacity=alt.condition(hover, alt.value(1), alt.value(0))
             )
+            
             chart_volumen = alt.layer(vol_bar, vol_rule)
             
             final_chart = alt.vconcat(chart_precio, chart_volumen).resolve_scale(x='shared')
