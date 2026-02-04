@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.17 (Header Pro)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.18 (FIFO Edition)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -278,44 +278,96 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO
+# 3. MOTOR DE CÁLCULO (LÓGICA FIFO V32.18)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
 
 if not df.empty:
+    # Cola FIFO auxiliar: { 'TICKER': [{'acciones_restantes': float, 'coste_por_accion_eur': float}, ...] }
+    colas_fifo = {}
+
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
         tipo, tick = row.get('Tipo'), str(row.get('Ticker')).strip()
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
+        
         fx = get_exchange_rate_now(mon, MONEDA_BASE)
         dinero_eur = dinero * fx
         if precio <= 0: precio = 1
         acciones_op = dinero / precio 
+        
         en_rango = (año_seleccionado == "Todos los años") or (row.get('Año') == int(año_seleccionado))
         delta_p, delta_i = 0.0, 0.0
+        
         if en_rango: total_comi += (comi * fx)
         delta_p -= (comi * fx)
-        if tick not in cartera: cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': row.get('Descripcion', tick), 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
+
+        if tick not in cartera:
+            cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': row.get('Descripcion', tick), 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
+            colas_fifo[tick] = []
+        
         row['Fecha_Raw'] = row.get('Fecha_dt')
         cartera[tick]['movimientos'].append(row)
+
         if tipo == "Compra":
             delta_i = dinero_eur
             cartera[tick]['acciones'] += acciones_op
             cartera[tick]['coste_total_eur'] += dinero_eur
             if en_rango: compras_eur += dinero_eur
-            if cartera[tick]['acciones'] > 0: cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
+            
+            # FIFO: Añadir lote a la cola
+            colas_fifo[tick].append({
+                'acciones_restantes': acciones_op,
+                'coste_por_accion_eur': dinero_eur / acciones_op if acciones_op > 0 else 0
+            })
+
+            # PMC Calculado para referencia visual (media ponderada de lo que hay)
+            if cartera[tick]['acciones'] > 0: 
+                cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
+
         elif tipo == "Venta":
-            coste_prop = acciones_op * cartera[tick]['pmc']
-            beneficio = dinero_eur - coste_prop
+            acciones_a_vender = acciones_op
+            coste_total_venta_fifo = 0.0
+            
+            # FIFO: Consumir lotes antiguos
+            while acciones_a_vender > 0 and colas_fifo[tick]:
+                lote = colas_fifo[tick][0] # El más antiguo
+                
+                if lote['acciones_restantes'] <= acciones_a_vender:
+                    # Consumimos todo el lote
+                    coste_total_venta_fifo += lote['acciones_restantes'] * lote['coste_por_accion_eur']
+                    acciones_a_vender -= lote['acciones_restantes']
+                    colas_fifo[tick].pop(0)
+                else:
+                    # Consumimos parte del lote
+                    coste_total_venta_fifo += acciones_a_vender * lote['coste_por_accion_eur']
+                    lote['acciones_restantes'] -= acciones_a_vender
+                    acciones_a_vender = 0
+            
+            beneficio = dinero_eur - coste_total_venta_fifo
             delta_p += beneficio
-            if en_rango: ventas_coste += coste_prop; pnl_cerrado += beneficio; cartera[tick]['pnl_cerrado'] += beneficio
+            
+            if en_rango: 
+                ventas_coste += coste_total_venta_fifo
+                pnl_cerrado += beneficio
+                cartera[tick]['pnl_cerrado'] += beneficio
+            
             cartera[tick]['acciones'] -= acciones_op
-            cartera[tick]['coste_total_eur'] -= coste_prop
-            if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
+            cartera[tick]['coste_total_eur'] -= coste_total_venta_fifo
+            
+            # Limpieza de residuos decimales
+            if cartera[tick]['acciones'] < 0.000001: 
+                cartera[tick]['acciones'] = 0
+                cartera[tick]['coste_total_eur'] = 0
+                cartera[tick]['pmc'] = 0
+            else:
+                cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
+
         elif tipo == "Dividendo":
             delta_p += dinero_eur
             if en_rango: total_div += dinero_eur
+        
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==========================================
@@ -379,7 +431,7 @@ if st.session_state.ticker_detalle:
     m1.metric("Precio", f"{now:,.2f}" if now else "N/A")
     m2.metric("Acciones", f"{acc:,.4f}")
     m3.metric("Valor", f"{valor_mercado_eur:,.2f} €", delta=f"{rent:+.2f}%")
-    m4.metric("Trading", f"{info.get('pnl_cerrado',0):,.2f} €")
+    m4.metric("Trading (Realizado)", f"{info.get('pnl_cerrado',0):,.2f} €")
 
     st.subheader("📈 Gráfico")
     if not hist.empty:
@@ -467,7 +519,7 @@ else:
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
                 
-                valor_total_cartera += val # Acumulamos el valor total
+                valor_total_cartera += val
                 
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
@@ -475,15 +527,13 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.17 ---
-    # Dividimos el encabezado en Título (Izda) y Valor Total (Dcha)
+    # --- DISEÑO HEADER PRO V32.18 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     
     with c_hdr_1:
-        st.title("💼 Cartera") # Cambio de nombre solicitado
+        st.title("💼 Cartera") 
         
     with c_hdr_2:
-        # HTML para alinear a la derecha y hacer grande el valor
         st.markdown(f"""
             <div style="text-align: right;">
                 <span style="font-size: 1.1rem; color: gray;">Valor Cartera</span><br>
@@ -496,7 +546,7 @@ else:
     # --- MÉTRICAS SECUNDARIAS (4 COLUMNAS) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
-    m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
+    m2.metric("Trading (Realizado)", f"{pnl_cerrado:,.2f} €")
     m3.metric("Dividendos", f"{total_div:,.2f} €")
     m4.metric("Comisiones", f"-{total_comi:,.2f} €")
 
@@ -539,7 +589,7 @@ else:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
         c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-        tooltips = ["Logo oficial", "Símbolo bursátil", "Nombre Cía.", "Acciones en cartera", "Precio Medio Compra", "Coste total invertido", "Valor actual mercado", "Rentabilidad Viva (%)", "Bº Cerrado (Realizado)", "Ver Detalle"]
+        tooltips = ["Logo oficial", "Símbolo bursátil", "Nombre Cía.", "Acciones en cartera", "Precio Medio Compra (Remanente)", "Coste total invertido", "Valor actual mercado", "Rentabilidad Viva (%)", "Bº Cerrado (Realizado)", "Ver Detalle"]
         titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
         for i, title in enumerate(titles): c[i].markdown(f'<div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">{title}</div>', unsafe_allow_html=True)
         st.markdown("---")
