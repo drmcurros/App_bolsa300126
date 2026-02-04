@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.0 (Base Estable)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.1 (Fix Navegación)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -56,7 +56,6 @@ def register_new_user(username, password, name):
 def login_system():
     if st.session_state.current_user: return True
     
-    # Compatibilidad con versiones nuevas y viejas de Streamlit para query params
     try:
         query_params = st.query_params
     except:
@@ -249,6 +248,7 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
+                st.info("💡 Consejo: Para vender todo, copia el 'Valor Actual' de la tabla.")
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
@@ -480,30 +480,17 @@ else:
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
 
             base = alt.Chart(df_w).encode(x='Fecha:T')
-            
-            # --- CORRECCIÓN ASSERTION ERROR ALTAIR ---
-            area = base.mark_area(
-                opacity=0.6, 
-                line={'color':'purple'}, 
-                color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)
-            ).encode(y='ROI')
-            # ----------------------------------------
-
+            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
             rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-            
-            # Stats sutiles
             s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
             last = df_w['Fecha'].max()
             df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
             df_s['D'] = last
-            
-            lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4], opacity=0.5).encode(y='V', color=alt.Color('C', scale=None))
+            lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
             lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
-            
             hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
             pts = base.mark_point(opacity=0).add_params(hover)
             crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-            
             st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
 
     st.divider()
@@ -531,22 +518,29 @@ else:
 
     if tabla:
         df_show = pd.DataFrame(tabla)
-        event = st.dataframe(
+        # --- FIX V32.1: SELECCIÓN ROBUSTA DE FILA ---
+        st.dataframe(
             df_show.style.map(lambda v: 'color: green' if v>0 else 'color: red', subset=['Trading','% Latente']).format({'% Latente':"{:.2%}"}),
             column_config={
                 "Logo": st.column_config.ImageColumn(width="small"), 
                 "Acciones": st.column_config.NumberColumn(format="%.4f"), 
-                "Valor Actual": st.column_config.NumberColumn(format="%.2f €", help="Copia esto para vender"),
+                "Valor Actual": st.column_config.NumberColumn(format="%.2f €", help="Copia este valor para vender todo"),
                 "Invertido": st.column_config.NumberColumn(format="%.2f €"), 
                 "Trading": st.column_config.NumberColumn(format="%.2f €")
             },
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
-            key="selection_table"
+            key="tabla_cartera_main" # Key fija para leer estado
         )
-        if len(event.selection.rows) > 0:
-            idx = event.selection.rows[0]
-            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
-            st.rerun()
+        
+        # Leemos el estado directamente para evitar "flakiness"
+        selection = st.session_state.get("tabla_cartera_main", {}).get("selection", {})
+        if selection and selection.get("rows"):
+            selected_idx = selection["rows"][0]
+            ticker_sel = df_show.iloc[selected_idx]["Ticker"]
+            # Solo recargamos si cambia la selección para no resetear
+            if st.session_state.ticker_detalle != ticker_sel:
+                st.session_state.ticker_detalle = ticker_sel
+                st.rerun()
     
     st.divider()
     st.subheader("📜 Historial")
@@ -554,9 +548,4 @@ else:
         c1, c2 = st.columns(2)
         c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try:
-            c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
-        except: pass
-        def color_rows(r): 
-            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
-            return [f'color: {c}']*len(r)
-        st.dataframe(df.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+            c2.download_button("Descargar PDF", generar_pdf_hist
