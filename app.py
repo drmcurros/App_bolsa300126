@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.4 (Tooltips en Lista)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.5 (Fix KeyError)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -517,53 +517,32 @@ else:
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 
+                # UNIFIED KEYS FOR V32.5 FIX
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], 
-                    "Valor Actual": val, 
-                    "PMC": i['pmc'],
-                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
+                    "Acciones": i['acciones'], "PMC": i['pmc'],
+                    "Valor": val, "Invertido": i['coste_total_eur'],
+                    "Trading": i['pnl_cerrado'], "Latente": r_lat
                 })
 
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
         
-        # DEFINICIÓN DE COLUMNAS Y ENCABEZADOS CON TOOLTIPS
+        # --- TOOLTIPS HTML V32.4 ---
         c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
         
-        # (Texto Visible, Texto Tooltip)
-        headers_info = [
-            ("Logo", "Logo oficial"),
-            ("Ticker", "Código bolsa"),
-            ("Empresa", "Nombre Cía."),
-            ("Acciones", "Títulos"),
-            ("PMC", "Precio Medio Compra"),
-            ("Invertido", "Coste Total"),
-            ("Valor", "Valor Mercado"),
-            "% Latente", "Rentabilidad Viva",
-            "Trading", "Bº Cerrado",
-            "Ver", "Detalle"
-        ]
-        
-        # LISTA MANUAL DE HEADERS PARA QUE CUADRE EL INDICE
-        # Ajustamos a mano para meter el HTML
         tooltips = [
-            "Logo de la empresa", "Símbolo bursátil", "Nombre de la compañía", 
-            "Cantidad de acciones en cartera", "Precio Medio de Compra", 
-            "Capital total invertido (Coste)", "Valor actual de mercado", 
-            "Rentabilidad no realizada (Latente)", "Beneficio/Pérdida ya cerrada (Realizada)", 
-            "Ver gráfico detallado"
+            "Logo oficial", "Símbolo bursátil", "Nombre Cía.", 
+            "Acciones en cartera", "Precio Medio Compra", 
+            "Coste total invertido", "Valor actual mercado", 
+            "Rentabilidad Viva (%)", "Bº Cerrado (Realizado)", 
+            "Ver Detalle"
         ]
         titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
 
         for i, title in enumerate(titles):
-            # Inyección de HTML para el tooltip
-            c[i].markdown(f'''
-                <div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">
-                    {title}
-                </div>
-            ''', unsafe_allow_html=True)
+            c[i].markdown(f'<div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">{title}</div>', unsafe_allow_html=True)
             
         st.markdown("---")
 
@@ -575,10 +554,10 @@ else:
             with c[3]: st.write(f"{row['Acciones']:.3f}")
             with c[4]: st.write(f"{row['PMC']:,.2f}")
             with c[5]: st.write(f"{row['Invertido']:,.2f}")
-            with c[6]: st.write(f"**{row['Valor']:,.2f}**")
+            with c[6]: st.write(f"**{row['Valor']:,.2f}**") # FIX KEYERROR
             
-            color_lat = "green" if row['% Latente'] >= 0 else "red"
-            with c[7]: st.markdown(f":{color_lat}[{row['% Latente']:.2%}]")
+            color_lat = "green" if row['Latente'] >= 0 else "red"
+            with c[7]: st.markdown(f":{color_lat}[{row['Latente']:.2%}]")
             
             color_trad = "green" if row['Trading'] >= 0 else "red"
             with c[8]: st.markdown(f":{color_trad}[{row['Trading']:,.2f}]")
