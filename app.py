@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.5 (Fix KeyError)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.6 (Decimales Dinámicos)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -96,12 +96,22 @@ def login_system():
                 else: st.error("Código inválido")
     return False
 
-# --- FUNCIONES DATOS ---
+# --- FUNCIONES DATOS Y FORMATO ---
 def traducir_texto(texto):
     if not texto or texto == "Sin descripción.": return texto
     if not HAS_TRANSLATOR: return texto
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
+
+def fmt_dinamico(valor, sufijo=""):
+    """Formatea hasta 6 decimales quitando ceros extra + sufijo"""
+    if valor is None: return ""
+    # Formateamos con 6 decimales y comas de miles
+    s = f"{valor:,.6f}"
+    # Quitamos ceros a la derecha y el punto si queda al final
+    s = s.rstrip('0').rstrip('.')
+    if s == "": s = "0"
+    return f"{s} {sufijo}"
 
 @st.cache_data(ttl=300) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
@@ -379,7 +389,6 @@ if st.session_state.ticker_detalle:
         except: pass
 
     if not hist.empty:
-        # Cálculos
         if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
         if "Tendencia" in inds:
             hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
@@ -426,7 +435,6 @@ if st.session_state.ticker_detalle:
         
         layers = [main, base.mark_point(opacity=0).add_params(hover), base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Date', format='%Y-%m-%d'), 'Close', 'Volume'])]
         
-        # Stats Lines
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
         text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
         layers.append(rules_stats)
@@ -517,19 +525,18 @@ else:
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 
-                # UNIFIED KEYS FOR V32.5 FIX
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], "PMC": i['pmc'],
-                    "Valor": val, "Invertido": i['coste_total_eur'],
-                    "Trading": i['pnl_cerrado'], "Latente": r_lat
+                    "Acciones": i['acciones'], 
+                    "Valor": val, 
+                    "PMC": i['pmc'],
+                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat
                 })
 
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
         
-        # --- TOOLTIPS HTML V32.4 ---
         c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
         
         tooltips = [
@@ -551,16 +558,18 @@ else:
             with c[0]: st.image(row["Logo"], width=30)
             with c[1]: st.write(f"**{row['Ticker']}**")
             with c[2]: st.caption(row["Empresa"])
-            with c[3]: st.write(f"{row['Acciones']:.3f}")
-            with c[4]: st.write(f"{row['PMC']:,.2f}")
-            with c[5]: st.write(f"{row['Invertido']:,.2f}")
-            with c[6]: st.write(f"**{row['Valor']:,.2f}**") # FIX KEYERROR
+            # --- USO DE FUNCIÓN DE FORMATO DINÁMICO ---
+            with c[3]: st.write(fmt_dinamico(row['Acciones']))
+            with c[4]: st.write(fmt_dinamico(row['PMC'], '€'))
+            with c[5]: st.write(fmt_dinamico(row['Invertido'], '€'))
+            with c[6]: st.write(f"**{fmt_dinamico(row['Valor'], '€')}**") 
             
             color_lat = "green" if row['Latente'] >= 0 else "red"
-            with c[7]: st.markdown(f":{color_lat}[{row['Latente']:.2%}]")
+            # Multiplicamos por 100 antes de formatear
+            with c[7]: st.markdown(f":{color_lat}[{fmt_dinamico(row['Latente']*100, '%')}]")
             
             color_trad = "green" if row['Trading'] >= 0 else "red"
-            with c[8]: st.markdown(f":{color_trad}[{row['Trading']:,.2f}]")
+            with c[8]: st.markdown(f":{color_trad}[{fmt_dinamico(row['Trading'], '€')}]")
             
             with c[9]:
                 if st.button("🔍", key=f"btn_{row['Ticker']}"):
