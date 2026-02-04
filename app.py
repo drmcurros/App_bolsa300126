@@ -3,13 +3,14 @@ import pandas as pd
 import yfinance as yf
 import requests
 import altair as alt
+import numpy as np # Necesario para la línea de tendencia
 from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V24.0 (Colores Totales)", layout="wide") 
+st.set_page_config(page_title="Gestor V25.0 (Indicadores Pro)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -369,12 +370,22 @@ if st.session_state.ticker_detalle:
         st.title(f"{info.get('desc', t)} ({t})")
         st.caption("Ficha detallada del activo")
 
+    # --- INDICADORES TÉCNICOS ---
     st.write("⚙️ **Configuración del Gráfico**")
-    c_time, c_type = st.columns(2)
+    c_time, c_ind = st.columns([1, 3])
+    
     opciones_tiempo = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
-    tipo_grafico = c_type.radio("Estilo", ["Línea", "Velas"], horizontal=True)
+    
+    # NUEVO: Selector de Indicadores
+    indicadores = c_ind.multiselect(
+        "Indicadores Técnicos (Opcionales)",
+        ["Volumen", "Media Móvil (SMA 50)", "Soportes/Resistencias", "Línea de Tendencia"],
+        default=[] # Por defecto limpio
+    )
+    
+    tipo_grafico = st.radio("Estilo de Precio", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
 
     with st.spinner(f"Cargando gráfico ({label_tiempo})..."):
         nombre, precio_now, descripcion_larga = get_stock_data_fmp(t)
@@ -387,6 +398,27 @@ if st.session_state.ticker_detalle:
             historia = historia.reset_index()
             historia['Date'] = pd.to_datetime(historia['Date']).dt.date
         except: pass
+
+    # --- CÁLCULO DE INDICADORES ---
+    if not historia.empty:
+        # 1. Media Móvil 50
+        if "Media Móvil (SMA 50)" in indicadores:
+            historia['SMA_50'] = historia['Close'].rolling(window=50).mean()
+        
+        # 2. Soportes y Resistencias (Max/Min del periodo)
+        val_max = historia['High'].max()
+        val_min = historia['Low'].min()
+        
+        # 3. Línea de Tendencia (Regresión Lineal Simple)
+        trend_df = pd.DataFrame()
+        if "Línea de Tendencia" in indicadores:
+            # Convertir fecha a ordinal para regresión
+            historia['Date_Ord'] = pd.to_datetime(historia['Date']).map(datetime.toordinal)
+            x = historia['Date_Ord'].values
+            y = historia['Close'].values
+            # Ajuste lineal (y = mx + b)
+            m, b = np.polyfit(x, y, 1)
+            historia['Trend'] = m * x + b
 
     m1, m2, m3, m4 = st.columns(4)
     acciones_activas = info.get('acciones', 0)
@@ -426,6 +458,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
+        # --- CAPAS PRINCIPALES (PRECIO) ---
         grafico_base = None
         if tipo_grafico == "Línea":
             grafico_base = base.mark_line(color='#29b5e8').encode(
@@ -444,6 +477,39 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
+        # --- CAPAS OPCIONALES (INDICADORES) ---
+        capas_extra = []
+        
+        # 1. Volumen (Capa independiente o compartida con escala dual)
+        # Para simplificar en Altair, lo pondremos como barras en la parte inferior con opacidad
+        if "Volumen" in indicadores:
+            vol = base.mark_bar(opacity=0.3, color='gray').encode(
+                y=alt.Y('Volume', axis=alt.Axis(title='Volumen', orient='right')),
+            )
+            capas_extra.append(vol)
+
+        # 2. SMA 50
+        if "Media Móvil (SMA 50)" in indicadores:
+            sma = base.mark_line(color='orange', strokeDash=[2,2]).encode(
+                y='SMA_50', tooltip=[alt.Tooltip('SMA_50', title='SMA 50', format='.2f')]
+            )
+            capas_extra.append(sma)
+
+        # 3. Línea de Tendencia
+        if "Línea de Tendencia" in indicadores:
+            trend = base.mark_line(color='purple', strokeWidth=2).encode(
+                y='Trend', tooltip=[alt.Tooltip('Trend', title='Tendencia', format='.2f')]
+            )
+            capas_extra.append(trend)
+
+        # 4. Soportes y Resistencias
+        if "Soportes/Resistencias" in indicadores:
+            res_line = base.mark_rule(color='green', strokeDash=[5,5]).encode(y=alt.datum(val_max))
+            sup_line = base.mark_rule(color='red', strokeDash=[5,5]).encode(y=alt.datum(val_min))
+            capas_extra.append(res_line)
+            capas_extra.append(sup_line)
+
+        # --- CAPAS ESTÁNDAR (INTERACTIVIDAD) ---
         points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
         
         tooltips = [
@@ -492,8 +558,19 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
+        # COMBINAMOS TODO CON CAPAS EXTRA
         chart_final = (grafico_base + points + rule_vertical + rules_stats + text_stats + capa_compras + capa_ventas)
-        st.altair_chart(chart_final, use_container_width=True)
+        
+        # Añadir indicadores seleccionados
+        for capa in capas_extra:
+            chart_final = chart_final + capa
+
+        # Resolver escalas independientes si hay volumen (eje derecho)
+        if "Volumen" in indicadores:
+            st.altair_chart(chart_final.resolve_scale(y='independent'), use_container_width=True)
+        else:
+            st.altair_chart(chart_final, use_container_width=True)
+            
         st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
         
     else:
@@ -508,7 +585,6 @@ if st.session_state.ticker_detalle:
         df_movs_show = df_movs_show[['Fecha_str', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision']]
         df_movs_show = df_movs_show.rename(columns={'Fecha_str': 'Fecha', 'Cantidad': 'Importe Total'})
         
-        # --- TABLA COLOREADA (IGUAL QUE PORTADA) ---
         def color_rows_detail(row):
             color = ''
             if row['Tipo'] == 'Compra': color = 'color: green'
