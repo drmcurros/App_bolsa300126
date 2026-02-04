@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V18.0 (Gráfico ROI Pro)", layout="wide") 
+st.set_page_config(page_title="Gestor V19.0 (Gráfico ROI Perfecto)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -221,11 +221,11 @@ with st.sidebar:
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         
-                        nom_api, pre_api = None, 0.0
+                        nom, pre = None, 0.0
                         with st.spinner(f"Buscando datos de {ticker}..."):
-                            nom_api, pre_api, _ = get_stock_data_fmp(ticker)
-                            if not nom_api: 
-                                nom_api, pre_api, _ = get_stock_data_yahoo(ticker)
+                            nom, pre, _ = get_stock_data_fmp(ticker)
+                            if not nom: 
+                                nom, pre, _ = get_stock_data_yahoo(ticker)
                         
                         nombre_final = ""
                         if desc_manual:
@@ -349,7 +349,7 @@ if not df.empty:
         })
 
 # ==========================================
-#        VISTA DETALLE
+#        VISTA DETALLE (SI HAY SELECCIÓN)
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
@@ -499,7 +499,7 @@ else:
     m3.metric(f"Dividendos {tit}", f"{total_dividendos:,.2f} €", delta=None)
     m4.metric(f"Comisiones {tit}", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
     
-    # --- GRÁFICO DE ROI EN EL TIEMPO CON COLOR CONDICIONAL ---
+    # --- GRÁFICO ROI (CORREGIDO: GRADIENTE EXACTO) ---
     if roi_history_log:
         df_roi = pd.DataFrame(roi_history_log)
         df_roi['Fecha'] = pd.to_datetime(df_roi['Fecha'])
@@ -510,48 +510,58 @@ else:
         if not df_roi.empty:
             df_roi.set_index('Fecha', inplace=True)
             df_roi_w = df_roi.resample('W').sum().fillna(0)
-            
             df_roi_w['Cum_Profit'] = df_roi_w['Delta_Profit'].cumsum()
             df_roi_w['Cum_Invest'] = df_roi_w['Delta_Invest'].cumsum()
-            
-            df_roi_w['ROI_Pct'] = df_roi_w.apply(
-                lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1
-            )
+            df_roi_w['ROI_Pct'] = df_roi_w.apply(lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1)
             df_roi_w = df_roi_w.reset_index()
 
-            # --- CONSTRUCCIÓN DE CAPAS ALTAIR ---
-            base = alt.Chart(df_roi_w).encode(x=alt.X('Fecha:T', title=""))
+            # --- LÓGICA DEL GRADIENTE EXACTO ---
+            y_min = df_roi_w['ROI_Pct'].min()
+            y_max = df_roi_w['ROI_Pct'].max()
+            
+            # Calculamos el punto de corte (offset) donde Y=0
+            # Altair usa 0 como tope superior y 1 como tope inferior en el eje Y? No, depende de la definición.
+            # En Gradient: 0 es el inicio (abajo si y1=1, y2=0) y 1 el final.
+            # Rango total = max - min.
+            # Distancia de min a 0 = abs(min).
+            # Offset = abs(min) / (max - min).
+            
+            stops = []
+            if y_min >= 0: # Todo positivo -> Todo Verde
+                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
+            elif y_max <= 0: # Todo negativo -> Todo Rojo
+                stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
+            else: # Cruza el cero -> Gradiente Cortado
+                range_total = y_max - y_min
+                offset_zero = abs(y_min) / range_total if range_total != 0 else 0.5
+                stops = [
+                    alt.GradientStop(color='#FF0000', offset=0),            # Rojo abajo
+                    alt.GradientStop(color='#FF0000', offset=offset_zero),  # Rojo hasta cero
+                    alt.GradientStop(color='#00C805', offset=offset_zero),  # Verde desde cero
+                    alt.GradientStop(color='#00C805', offset=1)             # Verde arriba
+                ]
 
-            # Capa 1: Área Verde (Solo valores positivos)
-            area_pos = base.mark_area(opacity=0.5, color='#00C805').encode(
-                y=alt.Y('max_0:Q', title="ROI (%)"),
-                y2=alt.datum(0) 
-            ).transform_calculate(
-                max_0="datum.ROI_Pct > 0 ? datum.ROI_Pct : 0"
-            )
-
-            # Capa 2: Área Roja (Solo valores negativos)
-            area_neg = base.mark_area(opacity=0.5, color='#FF0000').encode(
-                y=alt.Y('min_0:Q'),
-                y2=alt.datum(0) 
-            ).transform_calculate(
-                min_0="datum.ROI_Pct < 0 ? datum.ROI_Pct : 0"
-            )
-
-            # Capa 3: Línea Morada (Todo el recorrido)
-            line = base.mark_line(color='#800080', strokeWidth=2).encode(
-                y='ROI_Pct:Q',
+            area = alt.Chart(df_roi_w).mark_area(
+                opacity=0.6,
+                line={'color': '#800080', 'strokeWidth': 2}, # Línea Morada
+                color=alt.Gradient(
+                    gradient='linear',
+                    stops=stops,
+                    x1=1, x2=1, y1=1, y2=0 # Gradiente Vertical (Abajo -> Arriba)
+                )
+            ).encode(
+                x=alt.X('Fecha:T', title=""),
+                y=alt.Y('ROI_Pct', title="ROI Acumulado (%)"),
                 tooltip=[
                     alt.Tooltip('Fecha', title='Fecha', format='%Y-%m-%d'),
                     alt.Tooltip('ROI_Pct', title='ROI %', format='.2f'),
                     alt.Tooltip('Cum_Profit', title='Bº Neto (€)', format='.2f')
                 ]
-            )
+            ).properties(height=250)
             
-            # Línea de referencia en 0
-            rule = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
+            rule = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2], opacity=0.5).encode(y='y')
 
-            st.altair_chart((area_pos + area_neg + line + rule), use_container_width=True)
+            st.altair_chart((area + rule), use_container_width=True)
         else:
             st.info("No hay datos suficientes para generar la curva de ROI.")
 
@@ -562,7 +572,6 @@ else:
 
     with st.spinner("Actualizando panel de acciones..."):
         for t, info in cartera_global.items():
-            
             es_viva = info['acciones'] > 0.001
             tuvo_actividad = abs(info['pnl_cerrado']) > 0.01
             
