@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.8 (Historial Personalizado)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.10 (Puntos Redondos)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -171,22 +171,9 @@ def generar_pdf_historial(dataframe, titulo):
     pdf = PDF(orientation='L') 
     pdf.add_page()
     pdf.set_font("Arial", size=10)
-    
-    # Ajuste de columnas PDF para incluir Usuario
-    cols_map = {
-        'Fecha_str': ('Fecha', 30), 
-        'Ticker': ('Ticker', 15), 
-        'Descripcion': ('Empresa', 50), 
-        'Cantidad': ('Cant.', 25), 
-        'Precio': ('Precio', 25), 
-        'Moneda': ('Div', 15), 
-        'Comision': ('Com.', 20),
-        'Usuario': ('Usuario', 30)
-    }
-    
+    cols_map = {'Fecha_str': ('Fecha', 35), 'Ticker': ('Ticker', 15), 'Descripcion': ('Empresa', 50), 'Cantidad': ('Cant.', 25), 'Precio': ('Precio', 25), 'Moneda': ('Div', 15), 'Comision': ('Com.', 20), 'Usuario': ('Usuario', 30)}
     pdf.set_fill_color(200, 220, 255)
     pdf.set_font("Arial", 'B', 10)
-    
     cols_validas = []
     for k, (nombre_pdf, ancho) in cols_map.items():
         if k in dataframe.columns:
@@ -451,6 +438,38 @@ if st.session_state.ticker_detalle:
         layers.append(rules_stats)
         layers.append(text_stats)
 
+        # --- CAMBIO V32.10: PUNTOS REDONDOS ---
+        movs_raw = info.get('movimientos', [])
+        if movs_raw:
+            df_m_chart = pd.DataFrame(movs_raw)
+            df_m_chart['Date'] = pd.to_datetime(df_m_chart['Fecha_Raw']).dt.date
+            min_date = hist['Date'].min()
+            df_m_chart = df_m_chart[df_m_chart['Date'] >= min_date]
+            
+            if not df_m_chart.empty:
+                compras = df_m_chart[df_m_chart['Tipo'] == 'Compra']
+                if not compras.empty:
+                    # shape='circle' para punto redondo
+                    c_buy = alt.Chart(compras).mark_point(
+                        shape='circle', size=150, color='#0044FF', filled=True, opacity=1
+                    ).encode(
+                        x='Date:T', y='Precio', 
+                        tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', format='.2f'), alt.Tooltip('Cantidad', title='Total Invest')]
+                    )
+                    layers.append(c_buy)
+                
+                ventas = df_m_chart[df_m_chart['Tipo'] == 'Venta']
+                if not ventas.empty:
+                    # shape='circle' para punto redondo
+                    c_sell = alt.Chart(ventas).mark_point(
+                        shape='circle', size=150, color='#800020', filled=True, opacity=1
+                    ).encode(
+                        x='Date:T', y='Precio',
+                        tooltip=['Date', 'Precio', 'Cantidad']
+                    )
+                    layers.append(c_sell)
+        # --------------------------------------
+
         if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
         if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
         
@@ -569,7 +588,7 @@ else:
             with c[0]: st.image(row["Logo"], width=30)
             with c[1]: st.write(f"**{row['Ticker']}**")
             with c[2]: st.caption(row["Empresa"])
-            # --- USO DE FUNCIÓN DE FORMATO DINÁMICO ---
+            # --- FORMATO V32.6 ---
             with c[3]: st.write(fmt_dinamico(row['Acciones']))
             with c[4]: st.write(fmt_dinamico(row['PMC'], '€'))
             with c[5]: st.write(fmt_dinamico(row['Invertido'], '€'))
@@ -596,14 +615,11 @@ else:
             c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: pass
         
-        # --- FIX V32.8: COLUMNAS Y ORDEN SOLICITADO ---
+        # --- FIX V32.8: COLUMNAS, ORDEN Y USUARIO ---
         cols_deseadas = ['Fecha_str', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Usuario']
-        # Filtramos solo las que existan para evitar errores si 'Usuario' falta en BBDD antiguas
         cols_final = [c for c in cols_deseadas if c in df.columns]
-        
         df_display = df[cols_final].copy()
         
-        # Renombramos para que coincida con tu petición exacta
         df_display = df_display.rename(columns={
             'Fecha_str': 'Fecha',
             'Descripcion': 'Empresa',
@@ -611,10 +627,6 @@ else:
         })
         
         def color_rows(r): 
-            # Como 'Tipo' ya no está en la visual, necesitamos buscarlo en el df original usando el índice
-            # Pero el estilo se aplica fila a fila. 
-            # Truco: Si 'Tipo' no está, no coloreamos o asumimos lógica.
-            # Mejor opción: No colorear si no se ve el tipo, o dejarlo simple.
             return ['']*len(r)
         
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        st.dataframe(df_display.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
