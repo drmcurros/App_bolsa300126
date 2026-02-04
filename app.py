@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.15 (Velas Finas)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.17 (Header Pro)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -333,9 +333,7 @@ if st.session_state.ticker_detalle:
     c_time, c_ind = st.columns([1, 3])
     label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
     periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
-    # --- AJUSTE V32.15: VELAS MÁS FINAS ---
     width_map = {"1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
-    # --------------------------------------
     inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
     sma_p = 50
     if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
@@ -451,12 +449,51 @@ if st.session_state.ticker_detalle:
         st.dataframe(df_m.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
 
 # ==========================================
-#        DASHBOARD
+#        DASHBOARD (PORTADA)
 # ==========================================
 else:
-    st.title("💼 Dashboard")
+    # --- CÁLCULO PREVIO DE DATOS PARA EL ENCABEZADO ---
+    tabla = []
+    valor_total_cartera = 0.0
+    
+    with st.spinner("Conectando con el mercado..."):
+        for t, i in cartera.items():
+            alive = i['acciones'] > 0.001
+            act = abs(i['pnl_cerrado']) > 0.01
+            if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
+                p_now = 0
+                if i['acciones'] > 0.001:
+                    _, p_now, _ = get_stock_data_fmp(t)
+                    if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
+                val = i['acciones'] * p_now if p_now else 0
+                
+                valor_total_cartera += val # Acumulamos el valor total
+                
+                r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
+                tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
+
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
+
+    # --- DISEÑO HEADER PRO V32.17 ---
+    # Dividimos el encabezado en Título (Izda) y Valor Total (Dcha)
+    c_hdr_1, c_hdr_2 = st.columns([3, 1])
+    
+    with c_hdr_1:
+        st.title("💼 Cartera") # Cambio de nombre solicitado
+        
+    with c_hdr_2:
+        # HTML para alinear a la derecha y hacer grande el valor
+        st.markdown(f"""
+            <div style="text-align: right;">
+                <span style="font-size: 1.1rem; color: gray;">Valor Cartera</span><br>
+                <span style="font-size: 2.2rem; font-weight: bold;">{valor_total_cartera:,.2f} €</span>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+
+    # --- MÉTRICAS SECUNDARIAS (4 COLUMNAS) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
     m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
@@ -497,20 +534,7 @@ else:
             st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
 
     st.divider()
-    tabla = []
-    with st.spinner("Actualizando..."):
-        for t, i in cartera.items():
-            alive = i['acciones'] > 0.001
-            act = abs(i['pnl_cerrado']) > 0.01
-            if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
-                p_now = 0
-                if i['acciones'] > 0.001:
-                    _, p_now, _ = get_stock_data_fmp(t)
-                    if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
-                val = i['acciones'] * p_now if p_now else 0
-                r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
-                tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
-
+    
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
