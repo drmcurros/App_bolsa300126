@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.6 (Decimales Dinámicos)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.8 (Historial Personalizado)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -106,9 +106,7 @@ def traducir_texto(texto):
 def fmt_dinamico(valor, sufijo=""):
     """Formatea hasta 6 decimales quitando ceros extra + sufijo"""
     if valor is None: return ""
-    # Formateamos con 6 decimales y comas de miles
     s = f"{valor:,.6f}"
-    # Quitamos ceros a la derecha y el punto si queda al final
     s = s.rstrip('0').rstrip('.')
     if s == "": s = "0"
     return f"{s} {sufijo}"
@@ -173,9 +171,22 @@ def generar_pdf_historial(dataframe, titulo):
     pdf = PDF(orientation='L') 
     pdf.add_page()
     pdf.set_font("Arial", size=10)
-    cols_map = {'Fecha_str': ('Fecha', 35), 'Tipo': ('Tipo', 25), 'Ticker': ('Ticker', 20), 'Descripcion': ('Empresa', 60), 'Cantidad': ('Importe Total', 30), 'Precio': ('Precio', 25), 'Moneda': ('Div', 15), 'Comision': ('Com.', 20)}
+    
+    # Ajuste de columnas PDF para incluir Usuario
+    cols_map = {
+        'Fecha_str': ('Fecha', 30), 
+        'Ticker': ('Ticker', 15), 
+        'Descripcion': ('Empresa', 50), 
+        'Cantidad': ('Cant.', 25), 
+        'Precio': ('Precio', 25), 
+        'Moneda': ('Div', 15), 
+        'Comision': ('Com.', 20),
+        'Usuario': ('Usuario', 30)
+    }
+    
     pdf.set_fill_color(200, 220, 255)
     pdf.set_font("Arial", 'B', 10)
+    
     cols_validas = []
     for k, (nombre_pdf, ancho) in cols_map.items():
         if k in dataframe.columns:
@@ -565,7 +576,6 @@ else:
             with c[6]: st.write(f"**{fmt_dinamico(row['Valor'], '€')}**") 
             
             color_lat = "green" if row['Latente'] >= 0 else "red"
-            # Multiplicamos por 100 antes de formatear
             with c[7]: st.markdown(f":{color_lat}[{fmt_dinamico(row['Latente']*100, '%')}]")
             
             color_trad = "green" if row['Trading'] >= 0 else "red"
@@ -585,7 +595,26 @@ else:
         try:
             c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: pass
+        
+        # --- FIX V32.8: COLUMNAS Y ORDEN SOLICITADO ---
+        cols_deseadas = ['Fecha_str', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Usuario']
+        # Filtramos solo las que existan para evitar errores si 'Usuario' falta en BBDD antiguas
+        cols_final = [c for c in cols_deseadas if c in df.columns]
+        
+        df_display = df[cols_final].copy()
+        
+        # Renombramos para que coincida con tu petición exacta
+        df_display = df_display.rename(columns={
+            'Fecha_str': 'Fecha',
+            'Descripcion': 'Empresa',
+            'Comision': 'Comisión'
+        })
+        
         def color_rows(r): 
-            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
-            return [f'color: {c}']*len(r)
-        st.dataframe(df.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+            # Como 'Tipo' ya no está en la visual, necesitamos buscarlo en el df original usando el índice
+            # Pero el estilo se aplica fila a fila. 
+            # Truco: Si 'Tipo' no está, no coloreamos o asumimos lógica.
+            # Mejor opción: No colorear si no se ve el tipo, o dejarlo simple.
+            return ['']*len(r)
+        
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
