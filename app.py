@@ -12,7 +12,7 @@ from deep_translator import GoogleTranslator
 import time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.1 (Fix Tabla)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.1 (Botones)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -50,10 +50,8 @@ def register_new_user(username, password, name):
 def login_system():
     if st.session_state.current_user: return True
     
-    try:
-        query_params = st.query_params
-    except:
-        query_params = st.experimental_get_query_params()
+    try: query_params = st.query_params
+    except: query_params = st.experimental_get_query_params()
         
     invite_code_url = query_params.get("invite", "")
     if isinstance(invite_code_url, list): invite_code_url = invite_code_url[0]
@@ -241,14 +239,14 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
-                st.info("💡 Consejo: Para vender todo, introduce el importe exacto invertido.")
+                st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' que aparece en la tabla.")
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 
                 c1, c2 = st.columns(2)
-                dinero_total = c1.number_input("Importe Total", min_value=0.00, step=10.0)
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0)
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 
@@ -356,13 +354,8 @@ if st.session_state.ticker_detalle:
     c_time, c_ind = st.columns([1, 3])
     label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
     periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
+    width_map = {"1 Mes": 20, "6 Meses": 6, "1 Año": 3, "5 Años": 1, "Todo": 1}
     
-    ancho_vela = 3 
-    if label_t == "1 Mes": ancho_vela = 20
-    elif label_t == "6 Meses": ancho_vela = 6
-    elif label_t == "1 Año": ancho_vela = 3
-    else: ancho_vela = 1
-
     inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
     sma_p = 50
     if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
@@ -409,7 +402,7 @@ if st.session_state.ticker_detalle:
             main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
         else:
             rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
-            bar = base.mark_bar(width=ancho_vela).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             main = rule + bar
         
         layers = [main, base.mark_point(opacity=0).add_params(hover), base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Date', format='%Y-%m-%d'), 'Close', 'Volume'])]
@@ -423,7 +416,7 @@ if st.session_state.ticker_detalle:
         chart_p = alt.layer(*layers).properties(height=350, width=800)
         
         if "Volumen" in inds:
-            vol = base.mark_bar(width=ancho_vela).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800)
+            vol = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800)
             final = alt.vconcat(chart_p, vol).resolve_scale(x='shared')
         else: final = chart_p
         
@@ -447,6 +440,7 @@ else:
     st.title("💼 Dashboard")
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
+    
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
     m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
@@ -466,24 +460,28 @@ else:
             df_w = df_w.reset_index()
             
             ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
-            stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
-            if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
+            stops = [alt.GradientStop('green', 0), alt.GradientStop('green', 1)]
+            if ymax <= 0: stops = [alt.GradientStop('red', 0), alt.GradientStop('red', 1)]
             elif ymin < 0 < ymax:
                 off = abs(ymax)/(ymax-ymin)
-                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
+                stops = [alt.GradientStop('green', 0), alt.GradientStop('green', off), alt.GradientStop('red', off), alt.GradientStop('red', 1)]
 
             base = alt.Chart(df_w).encode(x='Fecha:T')
-            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
+            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient('linear', stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
             rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
+            
             s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
             last = df_w['Fecha'].max()
             df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
             df_s['D'] = last
+            
             lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
             lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
+            
             hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
             pts = base.mark_point(opacity=0).add_params(hover)
             crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
+
             st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
 
     st.divider()
@@ -501,42 +499,50 @@ else:
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 
+                # Formateo
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
                     "Acciones": i['acciones'], "PMC": i['pmc'],
-                    "Valor": val, "Trading": i['pnl_cerrado'], "% Latente": r_lat
+                    "Valor": val, "Trading": i['pnl_cerrado'], "Rentabilidad": r_lat
                 })
 
+    # --- CAMBIO DE V32.1: LISTA INTERACTIVA EN LUGAR DE TABLA ---
     if tabla:
-        df_show = pd.DataFrame(tabla)
-        # --- FIX V32.1: SELECCIÓN ROBUSTA ---
-        df_show = df_show.reset_index(drop=True) # IMPORTANTE: Limpiar índice
+        st.subheader("📊 Cartera Detallada")
+        st.markdown("---")
         
-        event = st.dataframe(
-            df_show.style.map(lambda v: 'color: green' if v>0 else 'color: red', subset=['Trading','% Latente']).format({'% Latente':"{:.2%}"}),
-            column_config={
-                "Logo": st.column_config.ImageColumn(width="small"), 
-                "Empresa": st.column_config.TextColumn("Empresa"),
-                "Ticker": st.column_config.TextColumn("Ticker"),
-                "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
-                "PMC": st.column_config.NumberColumn("PMC", format="%.2f €"),
-                "Valor": st.column_config.NumberColumn(format="%.2f €"),
-                "Trading": st.column_config.NumberColumn(format="%.2f €"),
-                "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")
-            },
-            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
-            key="main_table" # KEY FIJA
-        )
-        
-        if len(event.selection.rows) > 0:
-            idx = event.selection.rows[0]
-            ticker_sel = df_show.iloc[idx]["Ticker"]
-            # CHECK ANTI-BUCLE
-            if st.session_state.ticker_detalle != ticker_sel:
-                st.session_state.ticker_detalle = ticker_sel
-                st.rerun()
+        # Cabecera simulada
+        cols = st.columns([1, 2, 1.5, 2, 2, 2, 1])
+        cols[0].write("**Logo**")
+        cols[1].write("**Empresa**")
+        cols[2].write("**Ticker**")
+        cols[3].write("**Acciones**")
+        cols[4].write("**Valor Actual**")
+        cols[5].write("**Trading**")
+        cols[6].write("**Acción**")
+        st.markdown("---")
+
+        for row in tabla:
+            c = st.columns([1, 2, 1.5, 2, 2, 2, 1])
+            
+            with c[0]: st.image(row["Logo"], width=35)
+            with c[1]: st.write(row["Empresa"])
+            with c[2]: st.write(f"**{row['Ticker']}**")
+            with c[3]: st.write(f"{row['Acciones']:.4f}")
+            with c[4]: st.write(f"{row['Valor']:,.2f} €")
+            
+            # Color Trading
+            color_trading = "green" if row['Trading'] >= 0 else "red"
+            with c[5]: st.markdown(f":{color_trading}[{row['Trading']:,.2f} €]")
+            
+            # BOTÓN QUE NO FALLA
+            with c[6]:
+                if st.button("🔍", key=f"btn_{row['Ticker']}"):
+                    st.session_state.ticker_detalle = row['Ticker']
+                    st.rerun()
+            
+            st.divider()
     
-    st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
         c1, c2 = st.columns(2)
