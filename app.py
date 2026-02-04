@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V15.0 (Auto-Nombres)", layout="wide") 
+st.set_page_config(page_title="Gestor V15.1 (Zona Madrid)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -49,7 +49,6 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
-# --- FUNCIONES DE DATOS MEJORADAS ---
 def get_stock_data_fmp(ticker):
     """Retorna: (Nombre Empresa, Precio Actual, Descripción Larga)"""
     try:
@@ -66,17 +65,12 @@ def get_stock_data_yahoo(ticker):
     """Retorna: (Nombre Empresa, Precio Actual, Descripción Larga)"""
     try:
         stock = yf.Ticker(ticker)
-        # Intentamos obtener nombre y precio
         precio = stock.fast_info.last_price
-        
-        # Yahoo a veces guarda el nombre en 'longName' o 'shortName'
         info = stock.info
         nombre = info.get('longName') or info.get('shortName') or ticker
         desc = info.get('longBusinessSummary') or "Descripción no disponible en Yahoo."
-        
         if precio: return nombre, precio, desc
     except: 
-        # Fallback básico si falla info
         try:
             hist = stock.history(period="1d")
             if not hist.empty:
@@ -177,7 +171,8 @@ if data:
 with st.sidebar:
     st.header("Configuración")
     mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
-    mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=0)
+    # CAMBIO V15.1: index=1 pone "Europe/Madrid" por defecto
+    mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=1)
     st.divider()
     
     st.header("Filtros")
@@ -229,28 +224,23 @@ with st.sidebar:
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         
-                        # --- LÓGICA DE AUTO-COMPLETADO ---
                         nom_api, pre_api = None, 0.0
                         with st.spinner(f"Buscando datos de {ticker}..."):
-                            # Ignoramos la descripcion larga aqui (_), solo queremos el nombre
                             nom_api, pre_api, _ = get_stock_data_fmp(ticker)
                             if not nom_api: 
                                 nom_api, pre_api, _ = get_stock_data_yahoo(ticker)
                         
-                        # Determinamos el nombre final
                         nombre_final = ""
                         if desc_manual:
-                            nombre_final = desc_manual # Prioridad al usuario
+                            nombre_final = desc_manual
                         elif nom_api:
-                            nombre_final = nom_api # Auto-detectado
+                            nombre_final = nom_api
                         else:
-                            nombre_final = ticker # Fallback si falla todo
+                            nombre_final = ticker
                         
-                        # Determinamos el precio
                         precio_final = 0.0
                         if precio_manual > 0: precio_final = precio_manual
                         elif pre_api: precio_final = pre_api
-                        # ---------------------------------
 
                         dt_final = datetime.combine(f_in, h_in)
                         datos = {
@@ -600,9 +590,9 @@ else:
                 if row['Tipo'] == 'Compra':
                     color = 'color: green'
                 elif row['Tipo'] == 'Venta':
-                    color = 'color: #800020' # Burdeos
+                    color = 'color: #800020'
                 elif row['Tipo'] == 'Dividendo':
-                    color = 'color: #FF8C00' # Naranja Oscuro
+                    color = 'color: #FF8C00'
                 return [color] * len(row)
 
             st.dataframe(
