@@ -8,11 +8,17 @@ from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fpdf import FPDF
-from deep_translator import GoogleTranslator
 import time
 
+# --- INTENTO DE IMPORTAR TRADUCTOR ---
+try:
+    from deep_translator import GoogleTranslator
+    HAS_TRANSLATOR = True
+except ImportError:
+    HAS_TRANSLATOR = False
+
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.1 (Botones)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.1 (Botones + Fix Chart)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -93,6 +99,7 @@ def login_system():
 # --- FUNCIONES DATOS ---
 def traducir_texto(texto):
     if not texto or texto == "Sin descripción.": return texto
+    if not HAS_TRANSLATOR: return texto
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
@@ -239,7 +246,7 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
-                st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' que aparece en la tabla.")
+                st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
@@ -460,28 +467,32 @@ else:
             df_w = df_w.reset_index()
             
             ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
-            stops = [alt.GradientStop('green', 0), alt.GradientStop('green', 1)]
-            if ymax <= 0: stops = [alt.GradientStop('red', 0), alt.GradientStop('red', 1)]
+            stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
+            if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
             elif ymin < 0 < ymax:
                 off = abs(ymax)/(ymax-ymin)
-                stops = [alt.GradientStop('green', 0), alt.GradientStop('green', off), alt.GradientStop('red', off), alt.GradientStop('red', 1)]
+                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
 
             base = alt.Chart(df_w).encode(x='Fecha:T')
-            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient('linear', stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
-            rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
             
+            # --- CORRECCIÓN ERROR ALTAIR (V32.1) ---
+            area = base.mark_area(
+                opacity=0.6, 
+                line={'color':'purple'}, 
+                color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)
+            ).encode(y='ROI')
+            # -------------------------------------
+
+            rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
             s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
             last = df_w['Fecha'].max()
             df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
             df_s['D'] = last
-            
             lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
             lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
-            
             hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
             pts = base.mark_point(opacity=0).add_params(hover)
             crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-
             st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
 
     st.divider()
@@ -499,50 +510,49 @@ else:
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 
-                # Formateo
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], "PMC": i['pmc'],
-                    "Valor": val, "Trading": i['pnl_cerrado'], "Rentabilidad": r_lat
+                    "Acciones": i['acciones'], 
+                    "Valor Actual": val, 
+                    "PMC": i['pmc'],
+                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
                 })
 
-    # --- CAMBIO DE V32.1: LISTA INTERACTIVA EN LUGAR DE TABLA ---
+    # --- CAMBIO IMPORTANTE: LISTA DE BOTONES ---
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
         
-        # Cabecera simulada
-        cols = st.columns([1, 2, 1.5, 2, 2, 2, 1])
-        cols[0].write("**Logo**")
-        cols[1].write("**Empresa**")
-        cols[2].write("**Ticker**")
-        cols[3].write("**Acciones**")
-        cols[4].write("**Valor Actual**")
-        cols[5].write("**Trading**")
-        cols[6].write("**Acción**")
+        # Cabecera
+        c = st.columns([1, 2, 1.5, 2, 2, 2, 1])
+        c[0].markdown("**Logo**")
+        c[1].markdown("**Empresa**")
+        c[2].markdown("**Ticker**")
+        c[3].markdown("**Acciones**")
+        c[4].markdown("**Valor Actual**")
+        c[5].markdown("**Trading**")
+        c[6].markdown("**Ver**")
         st.markdown("---")
 
         for row in tabla:
             c = st.columns([1, 2, 1.5, 2, 2, 2, 1])
-            
             with c[0]: st.image(row["Logo"], width=35)
             with c[1]: st.write(row["Empresa"])
             with c[2]: st.write(f"**{row['Ticker']}**")
             with c[3]: st.write(f"{row['Acciones']:.4f}")
-            with c[4]: st.write(f"{row['Valor']:,.2f} €")
+            with c[4]: st.write(f"{row['Valor Actual']:,.2f} €")
             
-            # Color Trading
-            color_trading = "green" if row['Trading'] >= 0 else "red"
-            with c[5]: st.markdown(f":{color_trading}[{row['Trading']:,.2f} €]")
+            col_trad = "green" if row['Trading'] >= 0 else "red"
+            with c[5]: st.markdown(f":{col_trad}[{row['Trading']:,.2f} €]")
             
-            # BOTÓN QUE NO FALLA
+            # BOTÓN DE ACCIÓN DIRECTA
             with c[6]:
                 if st.button("🔍", key=f"btn_{row['Ticker']}"):
                     st.session_state.ticker_detalle = row['Ticker']
                     st.rerun()
-            
             st.divider()
     
+    st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
         c1, c2 = st.columns(2)
