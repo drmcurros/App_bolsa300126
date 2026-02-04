@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.2 (Líneas Estadísticas)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.3 (Columnas Completas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -379,14 +379,12 @@ if st.session_state.ticker_detalle:
         except: pass
 
     if not hist.empty:
-        # Cálculos de Indicadores
         if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
         if "Tendencia" in inds:
             hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
             x, y = hist['Ord'].values, hist['Close'].values
             if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
         
-        # --- ESTADÍSTICAS (MAX, MIN, MED) ---
         stat_max = hist['Close'].max()
         stat_min = hist['Close'].min()
         stat_avg = hist['Close'].mean()
@@ -427,24 +425,15 @@ if st.session_state.ticker_detalle:
         
         layers = [main, base.mark_point(opacity=0).add_params(hover), base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Date', format='%Y-%m-%d'), 'Close', 'Volume'])]
         
-        # --- AÑADIMOS LAS LÍNEAS ESTADÍSTICAS ---
-        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
-            y='Val', color=alt.Color('Color', scale=None)
-        )
-        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(
-            x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
-        )
+        # Stats Lines
+        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
+        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
         layers.append(rules_stats)
         layers.append(text_stats)
-        # ----------------------------------------
 
         if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
         if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
-        # "Soportes" (selector) ya no es necesario si mostramos las líneas siempre, pero lo dejamos opcional
-        if "Soportes" in inds:
-            # Líneas extra si el usuario las pide (pueden superponerse, pero es lo que hay en el código base)
-            pass 
-
+        
         chart_p = alt.layer(*layers).properties(height=350, width=800)
         
         if "Volumen" in inds:
@@ -501,15 +490,12 @@ else:
             base = alt.Chart(df_w).encode(x='Fecha:T')
             area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
             rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-            
             s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
             last = df_w['Fecha'].max()
             df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
             df_s['D'] = last
-            
             lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
             lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
-            
             hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
             pts = base.mark_point(opacity=0).add_params(hover)
             crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
@@ -532,38 +518,37 @@ else:
                 
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], 
-                    "Valor Actual": val, 
-                    "PMC": i['pmc'],
-                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
+                    "Acciones": i['acciones'], "PMC": i['pmc'],
+                    "Valor": val, "Invertido": i['coste_total_eur'],
+                    "Trading": i['pnl_cerrado'], "Latente": r_lat
                 })
 
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
-        
-        c = st.columns([1, 2, 1.5, 2, 2, 2, 1])
-        c[0].markdown("**Logo**")
-        c[1].markdown("**Empresa**")
-        c[2].markdown("**Ticker**")
-        c[3].markdown("**Acciones**")
-        c[4].markdown("**Valor Actual**")
-        c[5].markdown("**Trading**")
-        c[6].markdown("**Ver**")
+        # Columnas: Logo, Ticker, Empresa, Acciones, PMC, Invertido, Valor, Latente, Trading, Ver
+        c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
+        headers = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
+        for i, h in enumerate(headers): c[i].markdown(f"**{h}**")
         st.markdown("---")
 
         for row in tabla:
-            c = st.columns([1, 2, 1.5, 2, 2, 2, 1])
-            with c[0]: st.image(row["Logo"], width=35)
-            with c[1]: st.write(row["Empresa"])
-            with c[2]: st.write(f"**{row['Ticker']}**")
-            with c[3]: st.write(f"{row['Acciones']:.4f}")
-            with c[4]: st.write(f"{row['Valor Actual']:,.2f} €")
+            c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
+            with c[0]: st.image(row["Logo"], width=30)
+            with c[1]: st.write(f"**{row['Ticker']}**")
+            with c[2]: st.caption(row["Empresa"])
+            with c[3]: st.write(f"{row['Acciones']:.3f}")
+            with c[4]: st.write(f"{row['PMC']:,.2f}")
+            with c[5]: st.write(f"{row['Invertido']:,.2f}")
+            with c[6]: st.write(f"**{row['Valor']:,.2f}**")
             
-            col_trad = "green" if row['Trading'] >= 0 else "red"
-            with c[5]: st.markdown(f":{col_trad}[{row['Trading']:,.2f} €]")
+            color_lat = "green" if row['Latente'] >= 0 else "red"
+            with c[7]: st.markdown(f":{color_lat}[{row['Latente']:.2%}]")
             
-            with c[6]:
+            color_trad = "green" if row['Trading'] >= 0 else "red"
+            with c[8]: st.markdown(f":{color_trad}[{row['Trading']:,.2f}]")
+            
+            with c[9]:
                 if st.button("🔍", key=f"btn_{row['Ticker']}"):
                     st.session_state.ticker_detalle = row['Ticker']
                     st.rerun()
