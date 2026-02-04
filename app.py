@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V21.0 (Stats Lines)", layout="wide") 
+st.set_page_config(page_title="Gestor V22.0 (Stats en Detalle)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -410,9 +410,21 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        hover = alt.selection_point(
-            fields=['Date'], nearest=True, on='mouseover', empty=False
-        )
+        # CÁLCULO DE ESTADÍSTICAS DEL PRECIO PARA LAS LÍNEAS
+        stat_max = historia['Close'].max()
+        stat_min = historia['Close'].min()
+        stat_avg = historia['Close'].mean()
+        last_date = historia['Date'].max()
+        
+        df_price_stats = pd.DataFrame([
+            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
+            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
+            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
+        ])
+        df_price_stats['Date'] = last_date
+
+        # Configuración del gráfico base
+        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
         grafico_base = None
@@ -433,7 +445,10 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
+        # Puntos invisibles para el selector
         points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
+        
+        # Tooltip y línea vertical negra discontinua
         tooltips = [
             alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
             alt.Tooltip('Close', title='Cierre', format='.2f'),
@@ -444,6 +459,15 @@ if st.session_state.ticker_detalle:
             tooltip=tooltips
         )
 
+        # CAPAS DE ESTADÍSTICAS (MAX/MIN/AVG)
+        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
+            y='Val', color=alt.Color('Color', scale=None)
+        )
+        text_stats = alt.Chart(df_price_stats).mark_text(align='right', dx=-5, dy=-10).encode(
+            x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
+        )
+
+        # CAPAS DE OPERACIONES (COMPRAS/VENTAS)
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -473,7 +497,8 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        chart_final = (grafico_base + points + rule_vertical + capa_compras + capa_ventas)
+        # COMBINAMOS TODAS LAS CAPAS
+        chart_final = (grafico_base + points + rule_vertical + rules_stats + text_stats + capa_compras + capa_ventas)
         st.altair_chart(chart_final, use_container_width=True)
         st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
         
@@ -530,20 +555,6 @@ else:
             )
             df_roi_w = df_roi_w.reset_index()
 
-            # Stats Calculation
-            stat_max = df_roi_w['ROI_Pct'].max()
-            stat_min = df_roi_w['ROI_Pct'].min()
-            stat_avg = df_roi_w['ROI_Pct'].mean()
-            last_date = df_roi_w['Fecha'].max()
-            
-            df_stats = pd.DataFrame([
-                {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}%", 'Color': 'green'},
-                {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}%", 'Color': 'red'},
-                {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}%", 'Color': 'blue'}
-            ])
-            df_stats['Date'] = last_date
-
-            # LÓGICA DEL GRADIENTE EXACTO
             y_min = df_roi_w['ROI_Pct'].min()
             y_max = df_roi_w['ROI_Pct'].max()
             
@@ -562,15 +573,12 @@ else:
                     alt.GradientStop(color='#FF0000', offset=1)             
                 ]
 
-            # SELECCIÓN CROSSHAIR
             hover_roi = alt.selection_point(
                 fields=['Fecha'], nearest=True, on='mouseover', empty=False
             )
 
-            # GRÁFICO BASE
             base_roi = alt.Chart(df_roi_w).encode(x=alt.X('Fecha:T', title=""))
 
-            # ÁREA GRADIENTE
             area = base_roi.mark_area(
                 opacity=0.6,
                 line={'color': '#800080', 'strokeWidth': 2},
@@ -579,10 +587,8 @@ else:
                 )
             ).encode(y=alt.Y('ROI_Pct', title="ROI Acumulado (%)"))
             
-            # PUNTOS INVISIBLES (SELECTORES)
             selectors = base_roi.mark_point().encode(opacity=alt.value(0)).add_params(hover_roi)
 
-            # LÍNEA NEGRA DISCONTINUA (CROSSHAIR)
             tooltips_roi = [
                 alt.Tooltip('Fecha', title='Fecha', format='%Y-%m-%d'),
                 alt.Tooltip('ROI_Pct', title='ROI %', format='.2f'),
@@ -593,15 +599,24 @@ else:
                 tooltip=tooltips_roi
             )
             
-            # REGLA FIJA EN CERO
             rule_zero = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2], opacity=0.5).encode(y='y')
 
-            # REGLAS DE STATS (MAX/MIN/AVG)
+            # STATS DASHBOARD
+            stat_max = df_roi_w['ROI_Pct'].max()
+            stat_min = df_roi_w['ROI_Pct'].min()
+            stat_avg = df_roi_w['ROI_Pct'].mean()
+            last_date = df_roi_w['Fecha'].max()
+            
+            df_stats = pd.DataFrame([
+                {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}%", 'Color': 'green'},
+                {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}%", 'Color': 'red'},
+                {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}%", 'Color': 'blue'}
+            ])
+            df_stats['Date'] = last_date
+
             rules_stats = alt.Chart(df_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
                 y='Val', color=alt.Color('Color', scale=None)
             )
-            
-            # TEXTO DE STATS (DERECHA)
             text_stats = alt.Chart(df_stats).mark_text(align='right', dx=-5, dy=-10).encode(
                 x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
             )
