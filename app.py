@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.18 (FIFO Edition)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.19 (Lotes FIFO)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -278,13 +278,12 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO (LÓGICA FIFO V32.18)
+# 3. MOTOR DE CÁLCULO (LÓGICA FIFO CON DETALLE)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
 
 if not df.empty:
-    # Cola FIFO auxiliar: { 'TICKER': [{'acciones_restantes': float, 'coste_por_accion_eur': float}, ...] }
     colas_fifo = {}
 
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
@@ -304,8 +303,17 @@ if not df.empty:
         delta_p -= (comi * fx)
 
         if tick not in cartera:
-            cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': row.get('Descripcion', tick), 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
-            colas_fifo[tick] = []
+            colas_fifo[tick] = [] # Cola independiente
+            cartera[tick] = {
+                'acciones': 0.0, 
+                'coste_total_eur': 0.0, 
+                'desc': row.get('Descripcion', tick), 
+                'pnl_cerrado': 0.0, 
+                'pmc': 0.0, 
+                'moneda_origen': mon, 
+                'movimientos': [],
+                'lotes': colas_fifo[tick] # Referencia a la cola para la vista detalle
+            }
         
         row['Fecha_Raw'] = row.get('Fecha_dt')
         cartera[tick]['movimientos'].append(row)
@@ -316,13 +324,13 @@ if not df.empty:
             cartera[tick]['coste_total_eur'] += dinero_eur
             if en_rango: compras_eur += dinero_eur
             
-            # FIFO: Añadir lote a la cola
+            # FIFO: Añadir lote con FECHA
             colas_fifo[tick].append({
+                'fecha': row.get('Fecha_str', '').split(' ')[0], # Solo fecha, sin hora
                 'acciones_restantes': acciones_op,
                 'coste_por_accion_eur': dinero_eur / acciones_op if acciones_op > 0 else 0
             })
 
-            # PMC Calculado para referencia visual (media ponderada de lo que hay)
             if cartera[tick]['acciones'] > 0: 
                 cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
 
@@ -330,17 +338,14 @@ if not df.empty:
             acciones_a_vender = acciones_op
             coste_total_venta_fifo = 0.0
             
-            # FIFO: Consumir lotes antiguos
             while acciones_a_vender > 0 and colas_fifo[tick]:
-                lote = colas_fifo[tick][0] # El más antiguo
+                lote = colas_fifo[tick][0]
                 
                 if lote['acciones_restantes'] <= acciones_a_vender:
-                    # Consumimos todo el lote
                     coste_total_venta_fifo += lote['acciones_restantes'] * lote['coste_por_accion_eur']
                     acciones_a_vender -= lote['acciones_restantes']
                     colas_fifo[tick].pop(0)
                 else:
-                    # Consumimos parte del lote
                     coste_total_venta_fifo += acciones_a_vender * lote['coste_por_accion_eur']
                     lote['acciones_restantes'] -= acciones_a_vender
                     acciones_a_vender = 0
@@ -356,7 +361,6 @@ if not df.empty:
             cartera[tick]['acciones'] -= acciones_op
             cartera[tick]['coste_total_eur'] -= coste_total_venta_fifo
             
-            # Limpieza de residuos decimales
             if cartera[tick]['acciones'] < 0.000001: 
                 cartera[tick]['acciones'] = 0
                 cartera[tick]['coste_total_eur'] = 0
@@ -421,17 +425,63 @@ if st.session_state.ticker_detalle:
 
     m1, m2, m3, m4 = st.columns(4)
     acc = info.get('acciones', 0)
-    pmc_actual = info.get('pmc', 0)
+    
     valor_mercado_eur, rent = 0.0, 0.0
+    fx_actual = 1.0
     if now and acc > 0:
-        fx = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
-        valor_mercado_eur = acc * now * fx
+        fx_actual = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
+        valor_mercado_eur = acc * now * fx_actual
         if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
     
     m1.metric("Precio", f"{now:,.2f}" if now else "N/A")
     m2.metric("Acciones", f"{acc:,.4f}")
     m3.metric("Valor", f"{valor_mercado_eur:,.2f} €", delta=f"{rent:+.2f}%")
     m4.metric("Trading (Realizado)", f"{info.get('pnl_cerrado',0):,.2f} €")
+
+    # --- NUEVA SECCIÓN: DESGLOSE FIFO ---
+    lotes = info.get('lotes', [])
+    if lotes and now:
+        st.subheader("📦 Desglose de Lotes Activos (FIFO)")
+        data_lotes = []
+        for l in lotes:
+            cant = l['acciones_restantes']
+            coste_paquete = cant * l['coste_por_accion_eur']
+            valor_paquete = cant * now * fx_actual
+            plusvalia = valor_paquete - coste_paquete
+            rent_lote = (plusvalia / coste_paquete) * 100 if coste_paquete > 0 else 0
+            
+            data_lotes.append({
+                "Fecha Compra": l['fecha'],
+                "Acciones": cant,
+                "Precio Orig. (EUR)": l['coste_por_accion_eur'],
+                "Coste Lote": coste_paquete,
+                "Valor Hoy": valor_paquete,
+                "Plusvalía": plusvalia,
+                "% Rent.": rent_lote
+            })
+        
+        df_lotes = pd.DataFrame(data_lotes)
+        if not df_lotes.empty:
+            # Formateo y estilo
+            def estilo_lotes(row):
+                color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' # Verde claro / Rojo claro fondo
+                text_color = 'green' if row['Plusvalía'] >= 0 else 'red'
+                return [f'background-color: {color}; color: black']*len(row)
+
+            # Mostrar tabla con columnas formateadas
+            st.dataframe(
+                df_lotes.style.format({
+                    "Acciones": "{:,.4f}",
+                    "Precio Orig. (EUR)": "{:,.2f} €",
+                    "Coste Lote": "{:,.2f} €",
+                    "Valor Hoy": "{:,.2f} €",
+                    "Plusvalía": "{:,.2f} €",
+                    "% Rent.": "{:+.2f}%"
+                }).apply(estilo_lotes, axis=1), 
+                use_container_width=True, 
+                hide_index=True
+            )
+            st.caption("Nota: 'Precio Orig. (EUR)' incluye comisiones y cambio de divisa histórico.")
 
     st.subheader("📈 Gráfico")
     if not hist.empty:
@@ -490,7 +540,7 @@ if st.session_state.ticker_detalle:
         st.altair_chart(final, use_container_width=True)
 
     with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
-    st.subheader("📝 Movimientos")
+    st.subheader("📝 Movimientos Históricos")
     if info['movimientos']:
         df_m = pd.DataFrame(info['movimientos'])[['Fecha_str','Tipo','Cantidad','Precio','Moneda','Comision']].rename(columns={'Fecha_str':'Fecha', 'Cantidad':'Total'})
         df_m['Acciones'] = df_m.apply(lambda x: x['Total'] / x['Precio'] if x['Tipo'] != 'Dividendo' and x['Precio'] > 0 else 0, axis=1)
@@ -527,7 +577,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.18 ---
+    # --- DISEÑO HEADER PRO V32.19 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     
     with c_hdr_1:
