@@ -8,17 +8,11 @@ from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fpdf import FPDF
+from deep_translator import GoogleTranslator
 import time
 
-# --- INTENTO DE IMPORTAR TRADUCTOR (CON PROTECCIÓN) ---
-try:
-    from deep_translator import GoogleTranslator
-    HAS_TRANSLATOR = True
-except ImportError:
-    HAS_TRANSLATOR = False
-
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V34.1 (Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.0 (SaaS Mode)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -38,27 +32,46 @@ except Exception as e:
     st.error(f"Error crítico de configuración Airtable: {e}")
     st.stop()
 
-# --- FUNCIONES ---
+# --- FUNCIONES DE AUTENTICACIÓN ---
 def get_all_users():
+    """Descarga usuarios de Airtable para verificar login"""
     try:
         records = table_users.all()
         return {r['fields']['Username']: r['fields'] for r in records if 'Username' in r['fields']}
     except: return {}
 
 def register_new_user(username, password, name):
+    """Crea un nuevo usuario en Airtable"""
     try:
+        # Verificar si ya existe
         existing = get_all_users()
-        if username in existing: return False, "El usuario ya existe."
-        table_users.create({"Username": username, "Password": password, "Nombre": name, "Rol": "user"})
-        return True, "Usuario creado correctamente."
-    except Exception as e: return False, f"Error creando usuario: {e}"
+        if username in existing:
+            return False, "El usuario ya existe."
+        
+        # Crear (Por defecto rol 'user')
+        table_users.create({
+            "Username": username,
+            "Password": password,
+            "Nombre": name,
+            "Rol": "user"
+        })
+        return True, "Usuario creado correctamente. Ahora inicia sesión."
+    except Exception as e:
+        return False, f"Error creando usuario: {e}"
 
 def login_system():
+    """Sistema de Pestañas: Login y Registro"""
     if st.session_state.current_user: return True
+
+    # Chequeamos si hay código de invitación en la URL
+    # Nota: st.query_params es la forma moderna en Streamlit
     query_params = st.query_params
     invite_code_url = query_params.get("invite", "")
+
     st.header("🔐 Acceso al Portal")
-    tab1, tab2 = st.tabs(["Iniciar Sesión", "Registrarse"])
+    
+    tab1, tab2 = st.tabs(["Iniciar Sesión", "Registrarse (Invitación)"])
+    
     with tab1:
         with st.form("login_form"):
             user_in = st.text_input("Usuario")
@@ -69,29 +82,36 @@ def login_system():
                     st.session_state.current_user = user_in
                     st.session_state.user_role = users_db[user_in].get('Rol', 'user')
                     st.rerun()
-                else: st.error("Incorrecto")
+                else:
+                    st.error("Usuario o contraseña incorrectos")
+
     with tab2:
+        st.caption("Crea tu cuenta si tienes un código de invitación.")
         with st.form("register_form"):
-            new_user = st.text_input("Nuevo Usuario")
+            new_user = st.text_input("Nuevo Usuario (Email o Alias)")
             new_pass = st.text_input("Nueva Contraseña", type="password")
             new_name = st.text_input("Tu Nombre")
+            # Autocompletar código si viene por URL
             code_in = st.text_input("Código de Invitación", value=invite_code_url)
+            
             if st.form_submit_button("Crear Cuenta"):
                 if code_in == st.secrets["general"]["invite_code"]:
                     if new_user and new_pass:
                         ok, msg = register_new_user(new_user, new_pass, new_name)
                         if ok: 
                             st.success(msg)
-                            time.sleep(1)
+                            time.sleep(2)
                             st.rerun()
                         else: st.error(msg)
-                    else: st.warning("Rellena todo")
-                else: st.error("Código inválido")
+                    else: st.warning("Rellena todos los campos")
+                else:
+                    st.error("Código de invitación inválido.")
+    
     return False
 
+# --- FUNCIONES DATOS EXTERNOS ---
 def traducir_texto(texto):
     if not texto or texto == "Sin descripción.": return texto
-    if not HAS_TRANSLATOR: return texto # Fallback si no hay librería
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
@@ -113,7 +133,11 @@ def get_stock_data_fmp(ticker):
         response = requests.get(url, timeout=3)
         data = response.json()
         if data and len(data) > 0:
-            return data[0].get('companyName'), data[0].get('price'), traducir_texto(data[0].get('description'))
+            nombre = data[0].get('companyName')
+            precio = data[0].get('price')
+            desc_en = data[0].get('description')
+            desc_es = traducir_texto(desc_en)
+            return nombre, precio, desc_es
         return None, None, None
     except: return None, None, None
 
@@ -123,20 +147,23 @@ def get_stock_data_yahoo(ticker):
         precio = stock.fast_info.last_price
         info = stock.info
         nombre = info.get('longName') or info.get('shortName') or ticker
-        desc = traducir_texto(info.get('longBusinessSummary') or "Sin descripción.")
-        if precio: return nombre, precio, desc
+        desc_en = info.get('longBusinessSummary') or "Sin descripción."
+        desc_es = traducir_texto(desc_en)
+        if precio: return nombre, precio, desc_es
     except: 
         try:
             hist = stock.history(period="1d")
-            if not hist.empty: return ticker, hist['Close'].iloc[-1], "Sin descripción."
+            if not hist.empty:
+                return ticker, hist['Close'].iloc[-1], "Sin descripción."
         except: pass
     return None, None, None
 
 def guardar_en_airtable(record):
     try:
+        # ASIGNAR PROPIETARIO
         record["Usuario"] = st.session_state.current_user
         table_ops.create(record)
-        st.success(f"✅ Operación Guardada: {record['Ticker']}")
+        st.success(f"✅ Guardado: {record['Descripcion']}")
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
         st.rerun()
@@ -152,10 +179,11 @@ def generar_pdf_historial(dataframe, titulo):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
             self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+
     pdf = PDF(orientation='L') 
     pdf.add_page()
     pdf.set_font("Arial", size=10)
-    cols_map = {'Fecha_str': ('Fecha', 35), 'Tipo': ('Tipo', 25), 'Ticker': ('Ticker', 20), 'Descripcion': ('Empresa', 60), 'Cantidad': ('Importe Total', 30), 'Precio': ('Precio', 25), 'Moneda': ('Div', 15), 'Comision': ('Com.', 20)}
+    cols_map = {'Fecha_str': ('Fecha', 35), 'Tipo': ('Tipo', 25), 'Ticker': ('Ticker', 20), 'Descripcion': ('Empresa', 60), 'Cantidad': ('Importe', 30), 'Precio': ('Precio', 25), 'Moneda': ('Div', 15), 'Comision': ('Com.', 20)}
     pdf.set_fill_color(200, 220, 255)
     pdf.set_font("Arial", 'B', 10)
     cols_validas = []
@@ -172,9 +200,10 @@ def generar_pdf_historial(dataframe, titulo):
         pdf.ln()
     return pdf.output(dest='S').encode('latin-1')
 
-# --- APP INICIO ---
+# --- APP START ---
 if not login_system(): st.stop()
 
+# --- BARRA SUPERIOR Y MODOS ADMIN ---
 c_user, c_logout = st.columns([6, 1])
 c_user.write(f"👤 **{st.session_state.current_user}** ({st.session_state.user_role.upper()})")
 if c_logout.button("Salir"):
@@ -184,8 +213,9 @@ if c_logout.button("Salir"):
 
 ver_todo = False
 if st.session_state.user_role == 'admin':
-    ver_todo = st.toggle("👁️ Modo Admin", value=False)
+    ver_todo = st.toggle("👁️ Modo Admin: Ver datos de todos los usuarios", value=False)
 
+# 1. CARGA DATOS
 try: data = table_ops.all()
 except: data = []
 
@@ -193,10 +223,17 @@ df = pd.DataFrame()
 if data:
     df = pd.DataFrame([x['fields'] for x in data])
     df.columns = df.columns.str.strip() 
+
+    # --- FILTRO DE PRIVILEGIOS ---
     if 'Usuario' in df.columns:
-        if not ver_todo: df = df[df['Usuario'] == st.session_state.current_user]
+        if not ver_todo:
+            # Si no es admin activado, filtra solo lo suyo
+            df = df[df['Usuario'] == st.session_state.current_user]
     else:
-        if not ver_todo: df = pd.DataFrame()
+        # Si no existe la columna usuario (datos viejos), solo el admin los ve
+        if not ver_todo:
+            df = pd.DataFrame()
+    # -----------------------------
 
     if not df.empty:
         if 'Fecha' in df.columns:
@@ -206,21 +243,28 @@ if data:
         else: 
             df['Año'] = datetime.now().year
             df['Fecha_dt'] = datetime.now()
-        for col in ["Cantidad", "Precio", "Comision"]:
+
+        cols_numericas = ["Cantidad", "Precio", "Comision"]
+        for col in cols_numericas:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL ---
+# 2. BARRA LATERAL
 with st.sidebar:
     st.header("Configuración")
-    mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1)
+    mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
+    mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=1)
     st.divider()
+    
     st.header("Filtros")
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
-    ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
+    
+    st.write("")
+    ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas (0 acciones)", value=False)
+    
     st.divider()
 
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
@@ -231,37 +275,44 @@ with st.sidebar:
 
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         st.markdown("### 📝 Datos de la Operación")
-        if st.button("❌ Cerrar", use_container_width=True):
+        if st.button("❌ Cerrar Formulario", use_container_width=True):
             st.session_state.adding_mode = False
             st.session_state.pending_data = None
             st.rerun()
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
-                st.info("💡 Consejo: Para vender todo, copia el 'Valor Actual' de la tabla.")
+                st.info("💡 Consejo: Si dejas la 'Descripción' vacía, buscaré el nombre automáticamente.")
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
-                desc_manual = st.text_input("Descripción (Opcional)")
+                desc_manual = st.text_input("Descripción (Opcional - Auto si vacío)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 
                 c1, c2 = st.columns(2)
-                dinero_total = c1.number_input("Importe Total", min_value=0.00, step=10.0)
+                dinero_total = c1.number_input("Importe Total", min_value=0.0, step=10.0)
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 
                 st.markdown("---")
-                dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(mi_zona))), st.time_input("Hora", datetime.now(ZoneInfo(mi_zona))))
+                st.write(f"📆 **Fecha ({mi_zona}):**")
+                ahora_local = datetime.now(ZoneInfo(mi_zona))
+                
+                cd, ct = st.columns(2)
+                f_in = cd.date_input("Día", value=ahora_local, key=f"d_{st.session_state.reset_seed}")
+                h_in = ct.time_input("Hora", value=ahora_local, key=f"t_{st.session_state.reset_seed}")
                 
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
-                        nom, pre = None, 0.0
-                        with st.spinner("Buscando datos..."):
-                            nom, pre, _ = get_stock_data_fmp(ticker)
-                            if not nom: nom, pre, _ = get_stock_data_yahoo(ticker)
+                        nom_api = None
+                        pre_api = 0.0
+                        with st.spinner(f"Buscando datos de {ticker}..."):
+                            nom_api, pre_api, _ = get_stock_data_fmp(ticker)
+                            if not nom_api: nom_api, pre_api, _ = get_stock_data_yahoo(ticker)
                         
-                        nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
-                        precio_final = precio_manual if precio_manual > 0 else (pre if pre else 0.0)
+                        nombre_final = desc_manual if desc_manual else (nom_api if nom_api else ticker)
+                        precio_final = precio_manual if precio_manual > 0 else (pre_api if pre_api else 0.0)
 
+                        dt_final = datetime.combine(f_in, h_in)
                         datos = {
                             "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
                             "Moneda": moneda, "Cantidad": float(dinero_total),
@@ -282,259 +333,341 @@ with st.sidebar:
                 st.rerun()
 
 # 3. MOTOR DE CÁLCULO
-cartera = {}
-total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
-roi_log = []
+cartera_global = {}
+total_dividendos = 0.0 
+total_comisiones = 0.0
+pnl_global_cerrado = 0.0 
+total_compras_historicas_eur = 0.0
+coste_ventas_total = 0.0
+roi_history_log = []
 
 if not df.empty:
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
-        tipo, tick = row.get('Tipo'), str(row.get('Ticker')).strip()
-        dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
-        mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
-        fx = get_exchange_rate_now(mon, MONEDA_BASE)
-        
-        dinero_eur = dinero * fx
+        tipo = row.get('Tipo', 'Desconocido')
+        tick = str(row.get('Ticker', 'UNKNOWN')).strip()
+        desc = str(row.get('Descripcion', tick)).strip() or tick
+        dinero = float(row.get('Cantidad', 0))
+        precio = float(row.get('Precio', 1))
         if precio <= 0: precio = 1
+        mon = row.get('Moneda', 'EUR')
+        comi = float(row.get('Comision', 0))
+        fecha_op = row.get('Fecha_dt')
+        year_op = row.get('Año')
+        en_rango = (año_seleccionado == "Todos los años") or (year_op == int(año_seleccionado))
+
+        fx = get_exchange_rate_now(mon, MONEDA_BASE)
+        dinero_eur = dinero * fx
         acciones_op = dinero / precio 
         
-        en_rango = (año_seleccionado == "Todos los años") or (row.get('Año') == int(año_seleccionado))
-        delta_p, delta_i = 0.0, 0.0
+        delta_profit = 0.0
+        delta_invest = 0.0
+        if tipo == "Compra": delta_invest = dinero_eur
+        elif tipo == "Dividendo": delta_profit += dinero_eur
+        delta_profit -= (comi * fx)
 
-        if en_rango: total_comi += (comi * fx)
-        delta_p -= (comi * fx)
+        if en_rango: total_comisiones += (comi * fx)
 
-        if tick not in cartera:
-            cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': row.get('Descripcion', tick), 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
+        if tick not in cartera_global:
+            cartera_global[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc, 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
         
-        row['Fecha_Raw'] = row.get('Fecha_dt')
-        cartera[tick]['movimientos'].append(row)
+        row['Fecha_Raw'] = fecha_op
+        cartera_global[tick]['movimientos'].append(row)
 
         if tipo == "Compra":
-            delta_i = dinero_eur
-            cartera[tick]['acciones'] += acciones_op
-            cartera[tick]['coste_total_eur'] += dinero_eur
-            if en_rango: compras_eur += dinero_eur
-            if cartera[tick]['acciones'] > 0: cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
+            cartera_global[tick]['acciones'] += acciones_op
+            cartera_global[tick]['coste_total_eur'] += dinero_eur
+            if en_rango: total_compras_historicas_eur += dinero_eur 
+            if cartera_global[tick]['acciones'] > 0:
+                cartera_global[tick]['pmc'] = cartera_global[tick]['coste_total_eur'] / cartera_global[tick]['acciones']
+            if len(desc) > len(cartera_global[tick]['desc']): cartera_global[tick]['desc'] = desc
 
         elif tipo == "Venta":
-            coste_prop = acciones_op * cartera[tick]['pmc']
-            beneficio = dinero_eur - coste_prop
-            delta_p += beneficio
+            coste_proporcional = acciones_op * cartera_global[tick]['pmc']
+            beneficio_operacion = dinero_eur - coste_proporcional
+            delta_profit += beneficio_operacion
             if en_rango:
-                ventas_coste += coste_prop
-                pnl_cerrado += beneficio
-                cartera[tick]['pnl_cerrado'] += beneficio
-            cartera[tick]['acciones'] -= acciones_op
-            cartera[tick]['coste_total_eur'] -= coste_prop
-            if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
+                coste_ventas_total += coste_proporcional 
+                pnl_global_cerrado += beneficio_operacion
+                cartera_global[tick]['pnl_cerrado'] += beneficio_operacion
+            cartera_global[tick]['acciones'] -= acciones_op
+            cartera_global[tick]['coste_total_eur'] -= coste_proporcional 
+            if cartera_global[tick]['acciones'] < 0: cartera_global[tick]['acciones'] = 0
 
         elif tipo == "Dividendo":
-            delta_p += dinero_eur
-            if en_rango: total_div += dinero_eur
+            if en_rango: total_dividendos += dinero_eur
         
-        roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
+        roi_history_log.append({'Fecha': fecha_op, 'Year': year_op, 'Delta_Profit': delta_profit, 'Delta_Invest': delta_invest})
 
 # ==========================================
 #        VISTA DETALLE
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
-    info = cartera.get(t, {})
-    if st.button("⬅️ Volver", type="secondary"):
+    info = cartera_global.get(t, {})
+    if st.button("⬅️ Volver a la Cartera Principal", type="secondary"):
         st.session_state.ticker_detalle = None
         st.rerun()
     st.divider()
-    c1, c2 = st.columns([1, 5])
-    with c1: st.image(get_logo_url(t), width=80)
-    with c2: 
+    c_logo, c_tit = st.columns([1, 5])
+    with c_logo: st.image(get_logo_url(t), width=80)
+    with c_tit:
         st.title(f"{info.get('desc', t)} ({t})")
-        st.caption("Ficha detallada")
+        st.caption("Ficha detallada del activo")
 
+    st.write("⚙️ **Configuración del Gráfico**")
     c_time, c_ind = st.columns([1, 3])
-    label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
-    periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
+    opciones_tiempo = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
+    label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
+    periodo_api = opciones_tiempo[label_tiempo]
     
     ancho_vela = 3 
-    if label_t == "1 Mes": ancho_vela = 20
-    elif label_t == "6 Meses": ancho_vela = 6
-    elif label_t == "1 Año": ancho_vela = 3
+    if label_tiempo == "1 Mes": ancho_vela = 20
+    elif label_tiempo == "6 Meses": ancho_vela = 6
+    elif label_tiempo == "1 Año": ancho_vela = 3
     else: ancho_vela = 1
 
-    inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
-    sma_p = 50
-    if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
-    type_g = st.radio("Estilo", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
+    indicadores = c_ind.multiselect("Indicadores Técnicos", ["Volumen", "Media Móvil (SMA)", "Soportes/Resistencias", "Línea de Tendencia"], default=[])
+    sma_period = 50 
+    if "Media Móvil (SMA)" in indicadores: sma_period = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
+    tipo_grafico = st.radio("Estilo de Precio", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
 
-    with st.spinner("Cargando..."):
-        nom, now, desc = get_stock_data_fmp(t)
-        if not now: nom, now, desc = get_stock_data_yahoo(t)
-        hist = pd.DataFrame()
+    with st.spinner(f"Cargando gráfico ({label_tiempo})..."):
+        nombre, precio_now, descripcion_larga = get_stock_data_fmp(t)
+        if not precio_now: nombre, precio_now, descripcion_larga = get_stock_data_yahoo(t)
+        historia = pd.DataFrame()
         try:
-            hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
-            hist['Date'] = pd.to_datetime(hist['Date']).dt.date
-            hist['Volume'] = pd.to_numeric(hist['Volume'], errors='coerce').fillna(0)
+            ticker_obj = yf.Ticker(t)
+            historia = ticker_obj.history(period=periodo_api)
+            historia = historia.reset_index()
+            historia['Date'] = pd.to_datetime(historia['Date']).dt.date
+            historia['Volume'] = pd.to_numeric(historia['Volume'], errors='coerce').fillna(0)
         except: pass
 
-    if not hist.empty:
-        if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
-        if "Tendencia" in inds:
-            hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
-            x, y = hist['Ord'].values, hist['Close'].values
-            if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
-        v_max, v_min = hist['High'].max(), hist['Low'].min()
+    if not historia.empty:
+        if "Media Móvil (SMA)" in indicadores: historia['SMA_Selected'] = historia['Close'].rolling(window=sma_period).mean()
+        val_max = historia['High'].max()
+        val_min = historia['Low'].min()
+        last_date = historia['Date'].max()
+        if "Línea de Tendencia" in indicadores:
+            historia['Date_Ord'] = pd.to_datetime(historia['Date']).map(datetime.toordinal)
+            x, y = historia['Date_Ord'].values, historia['Close'].values
+            if len(x) > 1:
+                m, b = np.polyfit(x, y, 1)
+                historia['Trend'] = m * x + b
 
     m1, m2, m3, m4 = st.columns(4)
-    acc = info.get('acciones', 0)
+    acciones_activas = info.get('acciones', 0)
     pmc_actual = info.get('pmc', 0)
-    valor_mercado_eur, rent = 0.0, 0.0
-    if now and acc > 0:
+    valor_mercado_eur, rentabilidad_latente = 0.0, 0.0
+    if precio_now and acciones_activas > 0:
         fx = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
-        valor_mercado_eur = acc * now * fx
-        if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
+        valor_mercado_eur = acciones_activas * precio_now * fx
+        if pmc_actual > 0: rentabilidad_latente = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur', 0)
+
+    mon_sim = info.get('moneda_origen', '')
+    m1.metric("Precio Actual", f"{precio_now:,.2f} {mon_sim}" if precio_now else "N/A")
+    m2.metric("Tus Acciones", f"{acciones_activas:,.4f}")
+    m3.metric("Valor en Cartera", f"{valor_mercado_eur:,.2f} €", delta=f"{rentabilidad_latente:+.2f}%" if acciones_activas > 0 else "0%")
+    m4.metric("Bº Realizado", f"{info.get('pnl_cerrado',0):,.2f} €", delta="En periodo" if año_seleccionado != "Todos los años" else "Total")
+
+    st.subheader(f"📈 Evolución ({tipo_grafico})")
     
-    m1.metric("Precio", f"{now:,.2f}" if now else "N/A")
-    m2.metric("Acciones", f"{acc:,.4f}")
-    m3.metric("Valor", f"{valor_mercado_eur:,.2f} €", delta=f"{rent:+.2f}%")
-    m4.metric("Trading", f"{info.get('pnl_cerrado',0):,.2f} €")
-
-    st.subheader("📈 Gráfico")
-    if not hist.empty:
+    if not historia.empty:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
-        base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
+        base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
-        if type_g == "Línea":
-            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
+        grafico_base = None
+        if tipo_grafico == "Línea":
+            grafico_base = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False), title='Precio'))
         else:
-            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
-            bar = base.mark_bar(width=ancho_vela).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
-            main = rule + bar
-        
-        layers = [main, base.mark_point(opacity=0).add_params(hover), base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Date', format='%Y-%m-%d'), 'Close', 'Volume'])]
-        
-        if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
-        if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
-        if "Soportes" in inds:
-            layers.append(base.mark_rule(color='green', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(v_max)))
-            layers.append(base.mark_rule(color='red', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(v_min)))
+            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False), title='Precio'), y2='High', color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            bar = base.mark_bar(width=ancho_vela).encode(y='Open', y2='Close', color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            grafico_base = rule + bar
 
-        chart_p = alt.layer(*layers).properties(height=350, width=800)
-        
-        if "Volumen" in inds:
-            vol = base.mark_bar(width=ancho_vela).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800)
-            final = alt.vconcat(chart_p, vol).resolve_scale(x='shared')
-        else: final = chart_p
-        
-        st.altair_chart(final, use_container_width=True)
+        points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
+        tooltips = [alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'), alt.Tooltip('Close', title='Cierre', format='.2f'), alt.Tooltip('Volume', title='Volumen', format=',')]
+        rule_vertical = base.mark_rule(color='black', strokeDash=[4, 4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=tooltips)
 
-    with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
-    st.subheader("📝 Movimientos")
-    if info['movimientos']:
-        df_m = pd.DataFrame(info['movimientos'])[['Fecha_str','Tipo','Cantidad','Precio','Moneda','Comision']].rename(columns={'Fecha_str':'Fecha', 'Cantidad':'Total'})
-        df_m['Acciones'] = df_m.apply(lambda x: x['Total'] / x['Precio'] if x['Tipo'] != 'Dividendo' and x['Precio'] > 0 else 0, axis=1)
-        df_m = df_m[['Fecha', 'Tipo', 'Acciones', 'Precio', 'Total', 'Moneda', 'Comision']]
-        def color_rows(r): 
-            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
-            return [f'color: {c}']*len(r)
-        st.dataframe(df_m.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+        movs_raw = info.get('movimientos', [])
+        capa_compras = alt.Chart(pd.DataFrame()).mark_point()
+        capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
+        COLOR_COMPRA, COLOR_VENTA = "#0044FF", "#800020"   
+
+        if movs_raw:
+            df_movs_chart = pd.DataFrame(movs_raw)
+            df_movs_chart['Date'] = pd.to_datetime(df_movs_chart['Fecha_Raw']).dt.date
+            min_date = historia['Date'].min()
+            df_movs_chart = df_movs_chart[df_movs_chart['Date'] >= min_date]
+            if not df_movs_chart.empty:
+                compras = df_movs_chart[df_movs_chart['Tipo'] == 'Compra']
+                if not compras.empty:
+                    rule_compra = alt.Chart(compras).mark_rule(color=COLOR_COMPRA, strokeDash=[4, 4], opacity=0.6).encode(x='Date:T')
+                    point_compra = alt.Chart(compras).mark_point(shape='triangle-up', size=150, color=COLOR_COMPRA, filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad'])
+                    capa_compras = rule_compra + point_compra
+                ventas = df_movs_chart[df_movs_chart['Tipo'] == 'Venta']
+                if not ventas.empty:
+                    rule_venta = alt.Chart(ventas).mark_rule(color=COLOR_VENTA, strokeDash=[4, 4], opacity=0.6).encode(x='Date:T')
+                    point_venta = alt.Chart(ventas).mark_point(shape='triangle-down', size=150, color=COLOR_VENTA, filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad'])
+                    capa_ventas = rule_venta + point_venta
+
+        layers_precio = [grafico_base, points, rule_vertical, capa_compras, capa_ventas]
+        if "Media Móvil (SMA)" in indicadores: layers_precio.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA_Selected', tooltip=[alt.Tooltip('SMA_Selected', title=f'SMA {sma_period}', format='.2f')]))
+        if "Línea de Tendencia" in indicadores and 'Trend' in historia.columns: layers_precio.append(base.mark_line(color='purple', strokeWidth=2).encode(y='Trend', tooltip=[alt.Tooltip('Trend', title='Tendencia', format='.2f')]))
+        if "Soportes/Resistencias" in indicadores:
+            layers_precio.append(base.mark_rule(color='green', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(val_max)))
+            layers_precio.append(base.mark_rule(color='red', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(val_min)))
+            df_sr = pd.DataFrame([{'Val': val_max, 'Label': f"Max: {val_max:.2f}", 'Color': 'green'}, {'Val': val_min, 'Label': f"Min: {val_min:.2f}", 'Color': 'red'}])
+            df_sr['Date'] = last_date
+            layers_precio.append(alt.Chart(df_sr).mark_text(align='left', dx=5, dy=-5).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)))
+
+        chart_precio = alt.layer(*layers_precio).properties(height=350, width=800)
+
+        if "Volumen" in indicadores:
+            vol_bar = base.mark_bar(width=ancho_vela).encode(y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')), color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800)
+            vol_rule = base.mark_rule(color='black', strokeDash=[4, 4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)))
+            final_chart = alt.vconcat(chart_precio, alt.layer(vol_bar, vol_rule)).resolve_scale(x='shared')
+        else: final_chart = chart_precio
+
+        st.altair_chart(final_chart, use_container_width=True)
+        st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
+    else: st.warning("No se pudo cargar el historial de precios.")
+
+    with st.expander("📖 Sobre la empresa"): st.write(descripcion_larga if descripcion_larga else "No hay descripción disponible.")
+
+    st.subheader(f"📝 Historial de Operaciones")
+    if movs_raw:
+        df_movs_show = pd.DataFrame(movs_raw)
+        df_movs_show = df_movs_show[['Fecha_str', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision']]
+        df_movs_show = df_movs_show.rename(columns={'Fecha_str': 'Fecha', 'Cantidad': 'Importe Total'})
+        def color_rows_detail(row):
+            color = ''
+            if row['Tipo'] == 'Compra': color = 'color: green'
+            elif row['Tipo'] == 'Venta': color = 'color: #800020'
+            elif row['Tipo'] == 'Dividendo': color = 'color: #FF8C00'
+            return [color] * len(row)
+        st.dataframe(df_movs_show.sort_values(by="Fecha", ascending=False).style.apply(color_rows_detail, axis=1), use_container_width=True, hide_index=True)
 
 # ==========================================
-#        DASHBOARD
+#        VISTA DASHBOARD (PRINCIPAL)
 # ==========================================
 else:
-    st.title("💼 Dashboard")
-    neto = pnl_cerrado + total_div - total_comi
-    roi = (neto/compras_eur)*100 if compras_eur>0 else 0
+    st.title("💼 Control de Rentabilidad (P&L)")
+    beneficio_neto_total = pnl_global_cerrado + total_dividendos - total_comisiones
+    roi_total_pct = (beneficio_neto_total / total_compras_historicas_eur) * 100 if total_compras_historicas_eur > 0 else 0.0
+    roi_trading_pct = (pnl_global_cerrado / coste_ventas_total) * 100 if coste_ventas_total > 0 else 0.0
+
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
-    m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
-    m3.metric("Dividendos", f"{total_div:,.2f} €")
-    m4.metric("Comisiones", f"-{total_comi:,.2f} €")
+    tit = f"({año_seleccionado})"
+    m1.metric(f"💰 Bº NETO {tit}", f"{beneficio_neto_total:,.2f} €", delta=f"{roi_total_pct:+.2f} % (ROI)")
+    m2.metric(f"Trading {tit}", f"{pnl_global_cerrado:,.2f} €", delta=f"{roi_trading_pct:+.2f} %")
+    m3.metric(f"Dividendos {tit}", f"{total_dividendos:,.2f} €", delta=None)
+    m4.metric(f"Comisiones {tit}", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
+    
+    if roi_history_log:
+        df_roi = pd.DataFrame(roi_history_log)
+        df_roi['Fecha'] = pd.to_datetime(df_roi['Fecha'])
+        if año_seleccionado != "Todos los años": df_roi = df_roi[df_roi['Year'] == int(año_seleccionado)]
+        if not df_roi.empty:
+            df_roi.set_index('Fecha', inplace=True)
+            df_roi_w = df_roi.resample('W').sum().fillna(0)
+            df_roi_w['Cum_Profit'] = df_roi_w['Delta_Profit'].cumsum()
+            df_roi_w['Cum_Invest'] = df_roi_w['Delta_Invest'].cumsum()
+            df_roi_w['ROI_Pct'] = df_roi_w.apply(lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1)
+            df_roi_w = df_roi_w.reset_index()
 
-    if roi_log:
-        df_r = pd.DataFrame(roi_log)
-        df_r['Fecha'] = pd.to_datetime(df_r['Fecha'])
-        if año_seleccionado != "Todos los años": df_r = df_r[df_r['Year'] == int(año_seleccionado)]
-        if not df_r.empty:
-            df_r.set_index('Fecha', inplace=True)
-            df_w = df_r.resample('W').sum().fillna(0)
-            df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
-            df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-            df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
-            df_w = df_w.reset_index()
+            y_min, y_max = df_roi_w['ROI_Pct'].min(), df_roi_w['ROI_Pct'].max()
+            range_total = y_max - y_min
+            offset_zero = abs(y_max) / range_total if range_total != 0 else 0.5
             
-            ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
-            stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
-            if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-            elif ymin < 0 < ymax:
-                off = abs(ymax)/(ymax-ymin)
-                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
+            stops = []
+            if y_min >= 0: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
+            elif y_max <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
+            else: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=offset_zero), alt.GradientStop(color='#FF0000', offset=offset_zero), alt.GradientStop(color='#FF0000', offset=1)]
 
-            base = alt.Chart(df_w).encode(x='Fecha:T')
-            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
-            rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-            s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
-            last = df_w['Fecha'].max()
-            df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
-            df_s['D'] = last
-            lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
-            lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
-            hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
-            pts = base.mark_point(opacity=0).add_params(hover)
-            crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-            st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
+            hover_roi = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
+            base_roi = alt.Chart(df_roi_w).encode(x=alt.X('Fecha:T', title=""))
+            area = base_roi.mark_area(opacity=0.6, line={'color': '#800080', 'strokeWidth': 2}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y=alt.Y('ROI_Pct', title="ROI Acumulado (%)"))
+            rule_hover = base_roi.mark_rule(color='black', strokeDash=[4, 4]).encode(opacity=alt.condition(hover_roi, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Fecha', title='Fecha', format='%Y-%m-%d'), alt.Tooltip('ROI_Pct', title='ROI %', format='.2f'), alt.Tooltip('Cum_Profit', title='Bº Neto (€)', format='.2f')])
+            rule_zero = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2], opacity=0.5).encode(y='y')
+            selectors = base_roi.mark_point().encode(opacity=alt.value(0)).add_params(hover_roi)
+
+            stat_max, stat_min, stat_avg = df_roi_w['ROI_Pct'].max(), df_roi_w['ROI_Pct'].min(), df_roi_w['ROI_Pct'].mean()
+            df_stats = pd.DataFrame([{'Val': stat_max, 'Label': f"Max: {stat_max:.2f}%", 'Color': 'green'}, {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}%", 'Color': 'red'}, {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}%", 'Color': 'blue'}])
+            df_stats['Date'] = df_roi_w['Fecha'].max()
+            rules_stats = alt.Chart(df_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
+            text_stats = alt.Chart(df_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
+
+            st.altair_chart((area + rule_zero + selectors + rule_hover + rules_stats + text_stats), use_container_width=True)
+        else: st.info("No hay datos suficientes para generar la curva de ROI.")
 
     st.divider()
-    tabla = []
-    with st.spinner("Actualizando..."):
-        for t, i in cartera.items():
-            alive = i['acciones'] > 0.001
-            act = abs(i['pnl_cerrado']) > 0.01
-            if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
-                p_now = 0
-                if i['acciones'] > 0.001:
+
+    tabla_final = []
+    fx_usd_now = get_exchange_rate_now("USD", "EUR")
+
+    with st.spinner("Actualizando panel de acciones..."):
+        for t, info in cartera_global.items():
+            es_viva = info['acciones'] > 0.001
+            tuvo_actividad = abs(info['pnl_cerrado']) > 0.01
+            mostrar = False
+            if ver_solo_activas: mostrar = es_viva
+            else: mostrar = es_viva or tuvo_actividad
+
+            if mostrar:
+                saldo_vivo = info['coste_total_eur']
+                rentabilidad_pct = 0.0
+                precio_mercado_str = "0.00"
+                logo_url = get_logo_url(t)
+                
+                if info['acciones'] > 0.001:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
-                
-                val = i['acciones'] * p_now if p_now else 0
-                r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
-                
-                tabla.append({
-                    "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], 
-                    "Valor Actual": val, 
-                    "PMC": i['pmc'],
-                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
-                })
+                    if p_now:
+                        moneda_act = info['moneda_origen']
+                        fx_act = 1.0
+                        if moneda_act == "USD": fx_act = fx_usd_now
+                        precio_actual_eur = p_now * fx_act
+                        precio_mercado_str = f"{p_now:.2f} {moneda_act}"
+                        if info['pmc'] > 0: rentabilidad_pct = ((precio_actual_eur - info['pmc']) / info['pmc'])
 
-    if tabla:
-        df_show = pd.DataFrame(tabla)
+                tabla_final.append({'Logo': logo_url, 'Empresa': info['desc'], 'Ticker': t, 'Acciones': info['acciones'], 'PMC': info['pmc'], 'Precio Mercado': precio_mercado_str, 'Saldo Invertido': saldo_vivo, 'Bº/P (Cerrado)': info['pnl_cerrado'], '% Latente': rentabilidad_pct})
+
+    if tabla_final:
+        df_show = pd.DataFrame(tabla_final)
+        st.subheader(f"📊 Cartera Detallada")
+        st.info("👆 **Haz clic en una fila** para ver el gráfico interactivo.")
+        
         event = st.dataframe(
-            df_show.style.map(lambda v: 'color: green' if v>0 else 'color: red', subset=['Trading','% Latente']).format({'% Latente':"{:.2%}"}),
-            column_config={
-                "Logo": st.column_config.ImageColumn(width="small"), 
-                "Acciones": st.column_config.NumberColumn(format="%.4f"), 
-                "Valor Actual": st.column_config.NumberColumn(format="%.2f €", help="Copia este valor en 'Importe Total' para vender todo"),
-                "Invertido": st.column_config.NumberColumn(format="%.2f €"), 
-                "Trading": st.column_config.NumberColumn(format="%.2f €")
-            },
-            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
-            key="df_show_selection"
+            df_show.style.map(lambda v: 'color: green' if v > 0 else 'color: red', subset=['Bº/P (Cerrado)', '% Latente']).format({'% Latente': "{:.2%}"}),
+            column_config={"Logo": st.column_config.ImageColumn("Logo", width="small"), "Empresa": st.column_config.TextColumn("Empresa"), "Ticker": st.column_config.TextColumn("Ticker"), "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"), "PMC": st.column_config.NumberColumn("PMC", format="%.2f €"), "Saldo Invertido": st.column_config.NumberColumn("Invertido", format="%.2f €"), "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", format="%.2f €"), "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")},
+            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row"
         )
-        # --- FIX: LOGICA DE SELECCIÓN ---
         if len(event.selection.rows) > 0:
-            idx = event.selection.rows[0]
-            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
+            st.session_state.ticker_detalle = df_show.iloc[event.selection.rows[0]]["Ticker"]
             st.rerun()
-    
+    else: st.info("No hay datos para el periodo seleccionado.")
+
     st.divider()
-    st.subheader("📜 Historial")
+    st.subheader(f"📜 Historial de Órdenes y Dividendos ({año_seleccionado})")
+    
     if not df.empty:
-        c1, c2 = st.columns(2)
-        c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
-        try:
-            c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
-        except: pass
-        def color_rows(r): 
-            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
-            return [f'color: {c}']*len(r)
-        st.dataframe(df.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+        df_historial = df.copy()
+        if año_seleccionado != "Todos los años": df_historial = df_historial[df_historial['Año'] == int(año_seleccionado)]
+        if not df_historial.empty:
+            cols_ver = ['Fecha_str', 'Tipo', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision']
+            cols_ver = [c for c in cols_ver if c in df_historial.columns]
+            df_export = df_historial[cols_ver].sort_values(by='Fecha_str', ascending=False)
+            c_csv, c_pdf = st.columns(2)
+            c_csv.download_button(label="📥 Exportar a Excel (CSV)", data=df_export.to_csv(index=False).encode('utf-8'), file_name=f"historial_{año_seleccionado}.csv", mime="text/csv", use_container_width=True)
+            try:
+                c_pdf.download_button(label="📄 Exportar a PDF", data=generar_pdf_historial(df_export, f"Historial {año_seleccionado}"), file_name=f"historial_{año_seleccionado}.pdf", mime="application/pdf", use_container_width=True)
+            except Exception as e: c_pdf.warning(f"Error generando PDF: {e}")
+
+            def color_rows(row):
+                color = ''
+                if row['Tipo'] == 'Compra': color = 'color: green'
+                elif row['Tipo'] == 'Venta': color = 'color: #800020'
+                elif row['Tipo'] == 'Dividendo': color = 'color: #FF8C00'
+                return [color] * len(row)
+            st.dataframe(df_export.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+        else: st.info("No hay operaciones registradas en este periodo.")
