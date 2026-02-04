@@ -8,11 +8,17 @@ from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fpdf import FPDF
-from deep_translator import GoogleTranslator
 import time
 
+# --- INTENTO DE IMPORTAR TRADUCTOR (CON PROTECCIÓN) ---
+try:
+    from deep_translator import GoogleTranslator
+    HAS_TRANSLATOR = True
+except ImportError:
+    HAS_TRANSLATOR = False
+
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V34.0 (Valor Actual)", layout="wide") 
+st.set_page_config(page_title="Gestor V34.1 (Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -32,7 +38,7 @@ except Exception as e:
     st.error(f"Error crítico de configuración Airtable: {e}")
     st.stop()
 
-# --- FUNCIONES DE AUTENTICACIÓN ---
+# --- FUNCIONES ---
 def get_all_users():
     try:
         records = table_users.all()
@@ -83,9 +89,9 @@ def login_system():
                 else: st.error("Código inválido")
     return False
 
-# --- FUNCIONES DATOS ---
 def traducir_texto(texto):
     if not texto or texto == "Sin descripción.": return texto
+    if not HAS_TRANSLATOR: return texto # Fallback si no hay librería
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
@@ -238,12 +244,10 @@ with st.sidebar:
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 
-                # --- VUELTA AL INPUT CLÁSICO (V34.0) ---
                 c1, c2 = st.columns(2)
                 dinero_total = c1.number_input("Importe Total", min_value=0.00, step=10.0)
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-                # ---------------------------------------
                 
                 st.markdown("---")
                 dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(mi_zona))), st.time_input("Hora", datetime.now(ZoneInfo(mi_zona))))
@@ -269,6 +273,13 @@ with st.sidebar:
                         else:
                             st.session_state.pending_data = datos
                             st.rerun()
+        else:
+            st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
+            c_si, c_no = st.columns(2)
+            if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
+            if c_no.button("❌ Revisar"): 
+                st.session_state.pending_data = None
+                st.rerun()
 
 # 3. MOTOR DE CÁLCULO
 cartera = {}
@@ -452,14 +463,14 @@ else:
             df_w = df_w.reset_index()
             
             ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
-            stops = [alt.GradientStop('green', 0), alt.GradientStop('green', 1)]
-            if ymax <= 0: stops = [alt.GradientStop('red', 0), alt.GradientStop('red', 1)]
+            stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
+            if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
             elif ymin < 0 < ymax:
                 off = abs(ymax)/(ymax-ymin)
-                stops = [alt.GradientStop('green', 0), alt.GradientStop('green', off), alt.GradientStop('red', off), alt.GradientStop('red', 1)]
+                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
 
             base = alt.Chart(df_w).encode(x='Fecha:T')
-            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient('linear', stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
+            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
             rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
             s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
             last = df_w['Fecha'].max()
@@ -487,20 +498,17 @@ else:
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 
-                # --- NUEVA COLUMNA: VALOR ACTUAL ---
-                val_mercado_str = f"{val:,.2f} €" if i['moneda_origen'] == 'EUR' else f"{val:,.2f} € ({(val/get_exchange_rate_now(i['moneda_origen'])):.2f} {i['moneda_origen']})"
-                
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
                     "Acciones": i['acciones'], 
-                    "Valor Actual": val, # DATO NUMÉRICO PARA LA TABLA
+                    "Valor Actual": val, 
                     "PMC": i['pmc'],
                     "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
                 })
 
     if tabla:
         df_show = pd.DataFrame(tabla)
-        st.dataframe(
+        event = st.dataframe(
             df_show.style.map(lambda v: 'color: green' if v>0 else 'color: red', subset=['Trading','% Latente']).format({'% Latente':"{:.2%}"}),
             column_config={
                 "Logo": st.column_config.ImageColumn(width="small"), 
@@ -509,11 +517,14 @@ else:
                 "Invertido": st.column_config.NumberColumn(format="%.2f €"), 
                 "Trading": st.column_config.NumberColumn(format="%.2f €")
             },
-            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row"
+            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
+            key="df_show_selection"
         )
-        if len(st.session_state.get("df_show_selection", {}).get("rows", [])):
-             # Fix selection logic if needed
-             pass
+        # --- FIX: LOGICA DE SELECCIÓN ---
+        if len(event.selection.rows) > 0:
+            idx = event.selection.rows[0]
+            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
+            st.rerun()
     
     st.divider()
     st.subheader("📜 Historial")
