@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V26.0 (Volumen Separado)", layout="wide") 
+st.set_page_config(page_title="Gestor V26.1 (Fix Ancho)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -471,7 +471,6 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # Interacción
         points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
         tooltips = [
             alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
@@ -483,7 +482,6 @@ if st.session_state.ticker_detalle:
             tooltip=tooltips
         )
 
-        # Stats Lines
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
             y='Val', color=alt.Color('Color', scale=None)
         )
@@ -491,7 +489,6 @@ if st.session_state.ticker_detalle:
             x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
         )
 
-        # Buy/Sell markers
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -542,31 +539,29 @@ if st.session_state.ticker_detalle:
             layers_precio.append(res_line)
             layers_precio.append(sup_line)
 
-        chart_precio = alt.layer(*layers_precio).properties(height=350)
+        # Forzamos ancho explícito en propiedades para evitar colapso en vconcat
+        chart_precio = alt.layer(*layers_precio).properties(height=350, width=800)
 
         # --- CHART VOLUMEN (INFERIOR - SI ACTIVO) ---
         if "Volumen" in indicadores:
-            # Color condicional del volumen: Verde si Close > Open, Rojo si Close < Open
             vol_color = alt.condition(
                 "datum.Open < datum.Close", 
                 alt.value("#00C805"), # Verde
                 alt.value("#FF0000")  # Rojo
             )
             
-            # Barras de volumen
             vol_bar = base.mark_bar().encode(
                 y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')),
                 color=vol_color
-            ).properties(height=100)
+            ).properties(height=100, width=800) # Ancho explícito también aquí
             
-            # Cruceta compartida en volumen
             vol_rule = base.mark_rule(color='black', strokeDash=[4, 4]).encode(
                 opacity=alt.condition(hover, alt.value(1), alt.value(0))
             )
             
             chart_volumen = alt.layer(vol_bar, vol_rule)
             
-            # Concatenación Vertical (Precio Arriba, Volumen Abajo)
+            # VCONCAT con ancho corregido por properties + use_container_width
             final_chart = alt.vconcat(chart_precio, chart_volumen).resolve_scale(x='shared')
         else:
             final_chart = chart_precio
