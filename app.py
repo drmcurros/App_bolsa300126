@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V26.1 (Fix Ancho)", layout="wide") 
+st.set_page_config(page_title="Gestor V27.0 (SMA Dinámica)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -377,11 +377,16 @@ if st.session_state.ticker_detalle:
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
     
+    # NUEVO: OPCIONES SMA DINÁMICA
     indicadores = c_ind.multiselect(
         "Indicadores Técnicos",
-        ["Volumen", "Media Móvil (SMA 50)", "Soportes/Resistencias", "Línea de Tendencia"],
+        ["Volumen", "Media Móvil (SMA)", "Soportes/Resistencias", "Línea de Tendencia"],
         default=[]
     )
+    
+    sma_period = 50 # Default
+    if "Media Móvil (SMA)" in indicadores:
+        sma_period = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
     
     tipo_grafico = st.radio("Estilo de Precio", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
 
@@ -400,8 +405,9 @@ if st.session_state.ticker_detalle:
 
     # --- CÁLCULO DE INDICADORES ---
     if not historia.empty:
-        if "Media Móvil (SMA 50)" in indicadores:
-            historia['SMA_50'] = historia['Close'].rolling(window=50).mean()
+        if "Media Móvil (SMA)" in indicadores:
+            # USAMOS EL PERIODO SELECCIONADO
+            historia['SMA_Selected'] = historia['Close'].rolling(window=sma_period).mean()
         
         val_max = historia['High'].max()
         val_min = historia['Low'].min()
@@ -521,9 +527,9 @@ if st.session_state.ticker_detalle:
         # Ensamble Precio
         layers_precio = [grafico_base, points, rule_vertical, rules_stats, text_stats, capa_compras, capa_ventas]
         
-        if "Media Móvil (SMA 50)" in indicadores:
+        if "Media Móvil (SMA)" in indicadores:
             sma = base.mark_line(color='orange', strokeDash=[2,2]).encode(
-                y='SMA_50', tooltip=[alt.Tooltip('SMA_50', title='SMA 50', format='.2f')]
+                y='SMA_Selected', tooltip=[alt.Tooltip('SMA_Selected', title=f'SMA {sma_period}', format='.2f')]
             )
             layers_precio.append(sma)
 
@@ -539,7 +545,7 @@ if st.session_state.ticker_detalle:
             layers_precio.append(res_line)
             layers_precio.append(sup_line)
 
-        # Forzamos ancho explícito en propiedades para evitar colapso en vconcat
+        # Forzamos ancho explícito
         chart_precio = alt.layer(*layers_precio).properties(height=350, width=800)
 
         # --- CHART VOLUMEN (INFERIOR - SI ACTIVO) ---
@@ -553,7 +559,7 @@ if st.session_state.ticker_detalle:
             vol_bar = base.mark_bar().encode(
                 y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')),
                 color=vol_color
-            ).properties(height=100, width=800) # Ancho explícito también aquí
+            ).properties(height=100, width=800)
             
             vol_rule = base.mark_rule(color='black', strokeDash=[4, 4]).encode(
                 opacity=alt.condition(hover, alt.value(1), alt.value(0))
@@ -561,7 +567,6 @@ if st.session_state.ticker_detalle:
             
             chart_volumen = alt.layer(vol_bar, vol_rule)
             
-            # VCONCAT con ancho corregido por properties + use_container_width
             final_chart = alt.vconcat(chart_precio, chart_volumen).resolve_scale(x='shared')
         else:
             final_chart = chart_precio
