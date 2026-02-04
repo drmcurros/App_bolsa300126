@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V22.0 (Stats en Detalle)", layout="wide") 
+st.set_page_config(page_title="Gestor V23.0 (Etiquetas Externas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -410,7 +410,7 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # CÁLCULO DE ESTADÍSTICAS DEL PRECIO PARA LAS LÍNEAS
+        # CÁLCULO DE ESTADÍSTICAS DEL PRECIO
         stat_max = historia['Close'].max()
         stat_min = historia['Close'].min()
         stat_avg = historia['Close'].mean()
@@ -423,7 +423,6 @@ if st.session_state.ticker_detalle:
         ])
         df_price_stats['Date'] = last_date
 
-        # Configuración del gráfico base
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
@@ -445,10 +444,8 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # Puntos invisibles para el selector
         points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
         
-        # Tooltip y línea vertical negra discontinua
         tooltips = [
             alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
             alt.Tooltip('Close', title='Cierre', format='.2f'),
@@ -459,15 +456,15 @@ if st.session_state.ticker_detalle:
             tooltip=tooltips
         )
 
-        # CAPAS DE ESTADÍSTICAS (MAX/MIN/AVG)
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
             y='Val', color=alt.Color('Color', scale=None)
         )
-        text_stats = alt.Chart(df_price_stats).mark_text(align='right', dx=-5, dy=-10).encode(
+        
+        # --- CAMBIO AQUÍ: align='left' y dx positivo para sacar las etiquetas ---
+        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(
             x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
         )
 
-        # CAPAS DE OPERACIONES (COMPRAS/VENTAS)
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -497,7 +494,6 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        # COMBINAMOS TODAS LAS CAPAS
         chart_final = (grafico_base + points + rule_vertical + rules_stats + text_stats + capa_compras + capa_ventas)
         st.altair_chart(chart_final, use_container_width=True)
         st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
@@ -617,7 +613,9 @@ else:
             rules_stats = alt.Chart(df_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
                 y='Val', color=alt.Color('Color', scale=None)
             )
-            text_stats = alt.Chart(df_stats).mark_text(align='right', dx=-5, dy=-10).encode(
+            
+            # --- CAMBIO AQUÍ TAMBIÉN: align='left' y dx positivo ---
+            text_stats = alt.Chart(df_stats).mark_text(align='left', dx=5, dy=-10).encode(
                 x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
             )
 
