@@ -4,3 +4,4 @@ yfinance
 pyairtable
 requests
 fpdf
+deep-translator
