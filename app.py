@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V16.0 (Gráfico P&L)", layout="wide") 
+st.set_page_config(page_title="Gestor V17.0 (Gráfico ROI)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -64,9 +64,8 @@ def get_stock_data_yahoo(ticker):
     try:
         stock = yf.Ticker(ticker)
         precio = stock.fast_info.last_price
-        info = stock.info
-        nombre = info.get('longName') or info.get('shortName') or ticker
-        desc = info.get('longBusinessSummary') or "Descripción no disponible en Yahoo."
+        nombre = stock.info.get('longName') or stock.info.get('shortName') or ticker
+        desc = stock.info.get('longBusinessSummary') or "Sin descripción."
         if precio: return nombre, precio, desc
     except: 
         try:
@@ -267,6 +266,9 @@ pnl_global_cerrado = 0.0
 total_compras_historicas_eur = 0.0
 coste_ventas_total = 0.0
 
+# NUEVO: Lista para el gráfico de tiempo
+roi_history_log = []
+
 if not df.empty:
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
         tipo = row.get('Tipo', 'Desconocido')
@@ -286,6 +288,22 @@ if not df.empty:
         dinero_eur = dinero * fx
         acciones_op = dinero / precio 
         
+        # --- TRACKING PARA EL GRÁFICO (Delta de P&L y Delta de Inversión) ---
+        delta_profit = 0.0
+        delta_invest = 0.0
+        
+        if tipo == "Compra":
+            delta_invest = dinero_eur
+        elif tipo == "Venta":
+            # Para el gráfico, estimamos el profit aquí aunque el exacto viene del cierre
+            pass 
+        elif tipo == "Dividendo":
+            delta_profit += dinero_eur
+        
+        # Comisiones siempre restan
+        delta_profit -= (comi * fx)
+        # ------------------------------------------------------------------
+
         if en_rango:
             total_comisiones += (comi * fx)
 
@@ -312,6 +330,9 @@ if not df.empty:
             coste_proporcional = acciones_op * cartera_global[tick]['pmc']
             beneficio_operacion = dinero_eur - coste_proporcional
             
+            # Sumamos al Delta del Gráfico
+            delta_profit += beneficio_operacion
+
             if en_rango:
                 coste_ventas_total += coste_proporcional 
                 pnl_global_cerrado += beneficio_operacion
@@ -324,6 +345,14 @@ if not df.empty:
         elif tipo == "Dividendo":
             if en_rango:
                 total_dividendos += dinero_eur
+        
+        # Guardamos el evento para el gráfico
+        roi_history_log.append({
+            'Fecha': fecha_op, 
+            'Year': year_op,
+            'Delta_Profit': delta_profit,
+            'Delta_Invest': delta_invest
+        })
 
 # ==========================================
 #        VISTA DETALLE (SI HAY SELECCIÓN)
@@ -476,36 +505,68 @@ else:
     m3.metric(f"Dividendos {tit}", f"{total_dividendos:,.2f} €", delta=None)
     m4.metric(f"Comisiones {tit}", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
     
-    # --- NUEVO GRÁFICO P&L VISUAL (VERSIÓN 16.0) ---
-    df_chart_general = pd.DataFrame([
-        {"Concepto": "Trading", "Monto": pnl_global_cerrado},
-        {"Concepto": "Dividendos", "Monto": total_dividendos},
-        {"Concepto": "Comisiones", "Monto": -total_comisiones}, 
-        {"Concepto": "TOTAL NETO", "Monto": beneficio_neto_total}
-    ])
-    
-    def get_color(row):
-        if row['Concepto'] == "TOTAL NETO":
-            return "#00C805" if row['Monto'] >= 0 else "#FF0000"
-        elif row['Concepto'] == "Trading":
-            return "#00C805" if row['Monto'] >= 0 else "#FF0000"
-        elif row['Concepto'] == "Dividendos":
-            return "#FF8C00" # Naranja
-        elif row['Concepto'] == "Comisiones":
-            return "#FF0000" # Rojo
-        return "#808080"
+    # --- NUEVO GRÁFICO DE ROI EN EL TIEMPO (VERSIÓN 17.0) ---
+    if roi_history_log:
+        df_roi = pd.DataFrame(roi_history_log)
+        df_roi['Fecha'] = pd.to_datetime(df_roi['Fecha'])
+        
+        # 1. Filtro por Año
+        if año_seleccionado != "Todos los años":
+            df_roi = df_roi[df_roi['Year'] == int(año_seleccionado)]
+        
+        if not df_roi.empty:
+            # 2. Resample Semanal (Para suavizar y llenar huecos)
+            df_roi.set_index('Fecha', inplace=True)
+            df_roi_w = df_roi.resample('W').sum().fillna(0)
+            
+            # 3. Calcular Acumulados
+            df_roi_w['Cum_Profit'] = df_roi_w['Delta_Profit'].cumsum()
+            df_roi_w['Cum_Invest'] = df_roi_w['Delta_Invest'].cumsum()
+            
+            # 4. Calcular ROI %
+            # Evitamos división por cero
+            df_roi_w['ROI_Pct'] = df_roi_w.apply(
+                lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1
+            )
+            df_roi_w = df_roi_w.reset_index()
 
-    df_chart_general['Color_Barra'] = df_chart_general.apply(get_color, axis=1)
+            # 5. Gráfico de Área con Gradiente (Verde/Rojo)
+            chart_roi = alt.Chart(df_roi_w).mark_area(
+                line={'color': 'darkgray'},
+                color=alt.Gradient(
+                    gradient='linear',
+                    stops=[
+                        alt.GradientStop(color='red', offset=0),
+                        alt.GradientStop(color='red', offset=0.5), # Ajuste fino visual
+                        alt.GradientStop(color='green', offset=0.5),
+                        alt.GradientStop(color='green', offset=1)
+                    ],
+                    x1=1, x2=1, y1=1, y2=0 # Gradiente Vertical
+                ),
+                opacity=0.6
+            ).encode(
+                x=alt.X('Fecha:T', title=""),
+                y=alt.Y('ROI_Pct', title="ROI Acumulado (%)"),
+                tooltip=[
+                    alt.Tooltip('Fecha', title='Fecha', format='%Y-%m-%d'),
+                    alt.Tooltip('ROI_Pct', title='ROI %', format='.2f'),
+                    alt.Tooltip('Cum_Profit', title='Bº Neto (€)', format='.2f')
+                ],
+                # Truco para colorear según positivo/negativo usando 'condition' en el color
+                color=alt.condition(
+                    alt.datum.ROI_Pct > 0,
+                    alt.value("#00C805"),  # Verde
+                    alt.value("#FF0000")   # Rojo
+                )
+            ).properties(height=250)
+            
+            # Línea de cero
+            rule = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
 
-    chart_pnl = alt.Chart(df_chart_general).mark_bar().encode(
-        x=alt.X('Concepto', sort=None, title=""),
-        y=alt.Y('Monto', title="Euros (€)"),
-        color=alt.Color('Color_Barra', scale=None),
-        tooltip=['Concepto', 'Monto']
-    ).properties(height=250)
-
-    st.altair_chart(chart_pnl, use_container_width=True)
-    # ---------------------------------------------
+            st.altair_chart((chart_roi + rule), use_container_width=True)
+        else:
+            st.info("No hay datos suficientes en este periodo para generar la curva de ROI.")
+    # --------------------------------------------------------
 
     st.divider()
 
