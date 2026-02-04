@@ -6,9 +6,11 @@ import altair as alt
 from pyairtable import Api
 from datetime import datetime
 from zoneinfo import ZoneInfo
+# IMPORTANTE: Necesitas instalar fpdf (pip install fpdf)
+from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V13.0 (Filtro Activas)", layout="wide") 
+st.set_page_config(page_title="Gestor V14.1 (PDF Support)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -85,6 +87,58 @@ def guardar_en_airtable(record):
         st.rerun()
     except Exception as e: st.error(f"Error guardando: {e}")
 
+# --- FUNCIÓN GENERADORA DE PDF ---
+def generar_pdf_historial(dataframe, titulo):
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 12)
+            self.cell(0, 10, titulo, 0, 1, 'C')
+            self.ln(5)
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+
+    pdf = PDF(orientation='L') # Landscape para que quepan las columnas
+    pdf.add_page()
+    pdf.set_font("Arial", size=10)
+    
+    # Columnas a exportar y sus anchos aproximados
+    cols_map = {
+        'Fecha_str': ('Fecha', 35),
+        'Tipo': ('Tipo', 25),
+        'Ticker': ('Ticker', 20),
+        'Descripcion': ('Empresa', 60),
+        'Cantidad': ('Importe', 30),
+        'Precio': ('Precio', 25),
+        'Moneda': ('Div', 15),
+        'Comision': ('Com.', 20)
+    }
+    
+    # 1. ENCABEZADOS
+    pdf.set_fill_color(200, 220, 255) # Azul claro
+    pdf.set_font("Arial", 'B', 10)
+    
+    # Verificamos qué columnas existen realmente en el DF
+    cols_validas = []
+    for k, (nombre_pdf, ancho) in cols_map.items():
+        if k in dataframe.columns:
+            cols_validas.append((k, nombre_pdf, ancho))
+            pdf.cell(ancho, 10, nombre_pdf, 1, 0, 'C', 1)
+    pdf.ln()
+
+    # 2. FILAS
+    pdf.set_font("Arial", size=9)
+    for _, row in dataframe.iterrows():
+        for col_key, _, ancho in cols_validas:
+            valor = str(row[col_key])
+            # Limpieza básica de caracteres que pueden romper FPDF (ej. €)
+            valor = valor.replace("€", "EUR").encode('latin-1', 'replace').decode('latin-1')
+            pdf.cell(ancho, 10, valor, 1, 0, 'C')
+        pdf.ln()
+        
+    return pdf.output(dest='S').encode('latin-1')
+
 # --- APP INICIO ---
 if not check_password(): st.stop()
 
@@ -117,7 +171,7 @@ if data:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# 2. BARRA LATERAL (CONFIGURACIÓN)
+# 2. BARRA LATERAL
 with st.sidebar:
     st.header("Configuración")
     mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
@@ -131,10 +185,8 @@ with st.sidebar:
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     
-    # --- NUEVO FILTRO AQUÍ ---
     st.write("")
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas (0 acciones)", value=False)
-    # -------------------------
     
     st.divider()
 
@@ -224,7 +276,6 @@ if not df.empty:
         fecha_op = row.get('Fecha_dt')
         year_op = row.get('Año')
         
-        # Filtro de fecha para métricas
         en_rango = (año_seleccionado == "Todos los años") or (year_op == int(año_seleccionado))
 
         fx = get_exchange_rate_now(mon, MONEDA_BASE)
@@ -247,10 +298,8 @@ if not df.empty:
         if tipo == "Compra":
             cartera_global[tick]['acciones'] += acciones_op
             cartera_global[tick]['coste_total_eur'] += dinero_eur
-            
             if en_rango:
                 total_compras_historicas_eur += dinero_eur 
-
             if cartera_global[tick]['acciones'] > 0:
                 cartera_global[tick]['pmc'] = cartera_global[tick]['coste_total_eur'] / cartera_global[tick]['acciones']
             if len(desc) > len(cartera_global[tick]['desc']): cartera_global[tick]['desc'] = desc
@@ -273,7 +322,7 @@ if not df.empty:
                 total_dividendos += dinero_eur
 
 # ==========================================
-#        VISTA DETALLE (SI HAY SELECCIÓN)
+#        VISTA DETALLE
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
@@ -364,7 +413,6 @@ if st.session_state.ticker_detalle:
         if movs_raw:
             df_movs_chart = pd.DataFrame(movs_raw)
             df_movs_chart['Date'] = pd.to_datetime(df_movs_chart['Fecha_Raw']).dt.date
-            
             min_date = historia['Date'].min()
             df_movs_chart = df_movs_chart[df_movs_chart['Date'] >= min_date]
             
@@ -431,17 +479,12 @@ else:
 
     with st.spinner("Actualizando panel de acciones..."):
         for t, info in cartera_global.items():
-            
-            # === LOGICA DE VISIBILIDAD DE FILAS ===
             es_viva = info['acciones'] > 0.001
             tuvo_actividad = abs(info['pnl_cerrado']) > 0.01
             
             mostrar = False
-            if ver_solo_activas: # Si el check está activado
-                mostrar = es_viva
-            else: # Si el check está desactivado (Ver todo)
-                mostrar = es_viva or tuvo_actividad
-            # ======================================
+            if ver_solo_activas: mostrar = es_viva
+            else: mostrar = es_viva or tuvo_actividad
 
             if mostrar:
                 saldo_vivo = info['coste_total_eur']
@@ -496,3 +539,56 @@ else:
             st.rerun()
     else:
         st.info("No hay datos para el periodo seleccionado.")
+
+    # --- NUEVO: HISTORIAL DE OPERACIONES GLOBAL CON PDF ---
+    st.divider()
+    st.subheader(f"📜 Historial de Órdenes y Dividendos ({año_seleccionado})")
+    
+    if not df.empty:
+        df_historial = df.copy()
+        if año_seleccionado != "Todos los años":
+            df_historial = df_historial[df_historial['Año'] == int(año_seleccionado)]
+        
+        if not df_historial.empty:
+            cols_ver = ['Fecha_str', 'Tipo', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision']
+            cols_ver = [c for c in cols_ver if c in df_historial.columns]
+            df_export = df_historial[cols_ver].sort_values(by='Fecha_str', ascending=False)
+            
+            c_csv, c_pdf = st.columns(2)
+            
+            # BOTÓN CSV
+            csv = df_export.to_csv(index=False).encode('utf-8')
+            c_csv.download_button(
+                label="📥 Exportar a Excel (CSV)",
+                data=csv,
+                file_name=f"historial_{año_seleccionado}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+            # BOTÓN PDF
+            try:
+                pdf_bytes = generar_pdf_historial(df_export, f"Historial {año_seleccionado}")
+                c_pdf.download_button(
+                    label="📄 Exportar a PDF",
+                    data=pdf_bytes,
+                    file_name=f"historial_{año_seleccionado}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except Exception as e:
+                c_pdf.warning(f"Error generando PDF: {e}")
+
+            def color_tipo(val):
+                if val == 'Compra': return 'color: green'
+                elif val == 'Dividendo': return 'color: green; font-weight: bold'
+                elif val == 'Venta': return 'color: #800020'
+                return ''
+
+            st.dataframe(
+                df_export.style.map(color_tipo, subset=['Tipo']),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No hay operaciones registradas en este periodo.")
