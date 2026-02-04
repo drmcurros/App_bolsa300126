@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V15.1 (Zona Madrid)", layout="wide") 
+st.set_page_config(page_title="Gestor V16.0 (Gráfico P&L)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -50,7 +50,6 @@ def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
 def get_stock_data_fmp(ticker):
-    """Retorna: (Nombre Empresa, Precio Actual, Descripción Larga)"""
     try:
         api_key = st.secrets["fmp"]["api_key"]
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
@@ -62,7 +61,6 @@ def get_stock_data_fmp(ticker):
     except: return None, None, None
 
 def get_stock_data_yahoo(ticker):
-    """Retorna: (Nombre Empresa, Precio Actual, Descripción Larga)"""
     try:
         stock = yf.Ticker(ticker)
         precio = stock.fast_info.last_price
@@ -171,7 +169,6 @@ if data:
 with st.sidebar:
     st.header("Configuración")
     mis_zonas = ["Atlantic/Canary", "Europe/Madrid", "UTC"]
-    # CAMBIO V15.1: index=1 pone "Europe/Madrid" por defecto
     mi_zona = st.selectbox("🌍 Tu Zona Horaria:", mis_zonas, index=1)
     st.divider()
     
@@ -479,6 +476,37 @@ else:
     m3.metric(f"Dividendos {tit}", f"{total_dividendos:,.2f} €", delta=None)
     m4.metric(f"Comisiones {tit}", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
     
+    # --- NUEVO GRÁFICO P&L VISUAL (VERSIÓN 16.0) ---
+    df_chart_general = pd.DataFrame([
+        {"Concepto": "Trading", "Monto": pnl_global_cerrado},
+        {"Concepto": "Dividendos", "Monto": total_dividendos},
+        {"Concepto": "Comisiones", "Monto": -total_comisiones}, 
+        {"Concepto": "TOTAL NETO", "Monto": beneficio_neto_total}
+    ])
+    
+    def get_color(row):
+        if row['Concepto'] == "TOTAL NETO":
+            return "#00C805" if row['Monto'] >= 0 else "#FF0000"
+        elif row['Concepto'] == "Trading":
+            return "#00C805" if row['Monto'] >= 0 else "#FF0000"
+        elif row['Concepto'] == "Dividendos":
+            return "#FF8C00" # Naranja
+        elif row['Concepto'] == "Comisiones":
+            return "#FF0000" # Rojo
+        return "#808080"
+
+    df_chart_general['Color_Barra'] = df_chart_general.apply(get_color, axis=1)
+
+    chart_pnl = alt.Chart(df_chart_general).mark_bar().encode(
+        x=alt.X('Concepto', sort=None, title=""),
+        y=alt.Y('Monto', title="Euros (€)"),
+        color=alt.Color('Color_Barra', scale=None),
+        tooltip=['Concepto', 'Monto']
+    ).properties(height=250)
+
+    st.altair_chart(chart_pnl, use_container_width=True)
+    # ---------------------------------------------
+
     st.divider()
 
     tabla_final = []
