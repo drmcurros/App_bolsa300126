@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V23.0 (Etiquetas Externas)", layout="wide") 
+st.set_page_config(page_title="Gestor V24.0 (Colores Totales)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -410,7 +410,7 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # CÁLCULO DE ESTADÍSTICAS DEL PRECIO
+        # STATS
         stat_max = historia['Close'].max()
         stat_min = historia['Close'].min()
         stat_avg = historia['Close'].mean()
@@ -459,8 +459,6 @@ if st.session_state.ticker_detalle:
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
             y='Val', color=alt.Color('Color', scale=None)
         )
-        
-        # --- CAMBIO AQUÍ: align='left' y dx positivo para sacar las etiquetas ---
         text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(
             x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
         )
@@ -509,7 +507,20 @@ if st.session_state.ticker_detalle:
         df_movs_show = pd.DataFrame(movs_raw)
         df_movs_show = df_movs_show[['Fecha_str', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision']]
         df_movs_show = df_movs_show.rename(columns={'Fecha_str': 'Fecha', 'Cantidad': 'Importe Total'})
-        st.dataframe(df_movs_show.sort_values(by="Fecha", ascending=False), use_container_width=True, hide_index=True)
+        
+        # --- TABLA COLOREADA (IGUAL QUE PORTADA) ---
+        def color_rows_detail(row):
+            color = ''
+            if row['Tipo'] == 'Compra': color = 'color: green'
+            elif row['Tipo'] == 'Venta': color = 'color: #800020'
+            elif row['Tipo'] == 'Dividendo': color = 'color: #FF8C00'
+            return [color] * len(row)
+
+        st.dataframe(
+            df_movs_show.sort_values(by="Fecha", ascending=False).style.apply(color_rows_detail, axis=1), 
+            use_container_width=True, 
+            hide_index=True
+        )
 
 # ==========================================
 #        VISTA DASHBOARD (PRINCIPAL)
@@ -613,8 +624,6 @@ else:
             rules_stats = alt.Chart(df_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
                 y='Val', color=alt.Color('Color', scale=None)
             )
-            
-            # --- CAMBIO AQUÍ TAMBIÉN: align='left' y dx positivo ---
             text_stats = alt.Chart(df_stats).mark_text(align='left', dx=5, dy=-10).encode(
                 x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
             )
