@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V19.1 (Fix NameError)", layout="wide") 
+st.set_page_config(page_title="Gestor V21.0 (Stats Lines)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -221,10 +221,8 @@ with st.sidebar:
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         
-                        # --- CORRECCIÓN: Inicializar variables antes del bloque ---
                         nom_api = None
                         pre_api = 0.0
-                        # --------------------------------------------------------
 
                         with st.spinner(f"Buscando datos de {ticker}..."):
                             nom_api, pre_api, _ = get_stock_data_fmp(ticker)
@@ -412,13 +410,15 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
+        hover = alt.selection_point(
+            fields=['Date'], nearest=True, on='mouseover', empty=False
+        )
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
         grafico_base = None
         if tipo_grafico == "Línea":
             grafico_base = base.mark_line(color='#29b5e8').encode(
-                y=alt.Y('Close', scale=alt.Scale(zero=False), title='Precio'),
-                tooltip=['Date', 'Close']
+                y=alt.Y('Close', scale=alt.Scale(zero=False), title='Precio')
             )
         else:
             rule = base.mark_rule().encode(
@@ -429,15 +429,24 @@ if st.session_state.ticker_detalle:
             bar = base.mark_bar(width=8).encode(
                 y='Open',
                 y2='Close',
-                color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000")),
-                tooltip=['Date', 'Open', 'Close', 'High', 'Low']
+                color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
             )
             grafico_base = rule + bar
+
+        points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
+        tooltips = [
+            alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
+            alt.Tooltip('Close', title='Cierre', format='.2f'),
+            alt.Tooltip('Volume', title='Volumen', format=',')
+        ]
+        rule_vertical = base.mark_rule(color='black', strokeDash=[4, 4]).encode(
+            opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+            tooltip=tooltips
+        )
 
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
-        
         COLOR_COMPRA = "#0044FF"  
         COLOR_VENTA = "#800020"   
 
@@ -464,7 +473,7 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        chart_final = (grafico_base + capa_compras + capa_ventas).interactive()
+        chart_final = (grafico_base + points + rule_vertical + capa_compras + capa_ventas)
         st.altair_chart(chart_final, use_container_width=True)
         st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
         
@@ -503,7 +512,7 @@ else:
     m3.metric(f"Dividendos {tit}", f"{total_dividendos:,.2f} €", delta=None)
     m4.metric(f"Comisiones {tit}", f"-{total_comisiones:,.2f} €", delta="Costes", delta_color="inverse")
     
-    # --- GRÁFICO ROI (CORREGIDO: GRADIENTE EXACTO) ---
+    # --- GRÁFICO ROI CON STATS ---
     if roi_history_log:
         df_roi = pd.DataFrame(roi_history_log)
         df_roi['Fecha'] = pd.to_datetime(df_roi['Fecha'])
@@ -514,14 +523,25 @@ else:
         if not df_roi.empty:
             df_roi.set_index('Fecha', inplace=True)
             df_roi_w = df_roi.resample('W').sum().fillna(0)
-            
             df_roi_w['Cum_Profit'] = df_roi_w['Delta_Profit'].cumsum()
             df_roi_w['Cum_Invest'] = df_roi_w['Delta_Invest'].cumsum()
-            
             df_roi_w['ROI_Pct'] = df_roi_w.apply(
                 lambda x: (x['Cum_Profit'] / x['Cum_Invest'] * 100) if x['Cum_Invest'] > 0 else 0.0, axis=1
             )
             df_roi_w = df_roi_w.reset_index()
+
+            # Stats Calculation
+            stat_max = df_roi_w['ROI_Pct'].max()
+            stat_min = df_roi_w['ROI_Pct'].min()
+            stat_avg = df_roi_w['ROI_Pct'].mean()
+            last_date = df_roi_w['Fecha'].max()
+            
+            df_stats = pd.DataFrame([
+                {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}%", 'Color': 'green'},
+                {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}%", 'Color': 'red'},
+                {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}%", 'Color': 'blue'}
+            ])
+            df_stats['Date'] = last_date
 
             # LÓGICA DEL GRADIENTE EXACTO
             y_min = df_roi_w['ROI_Pct'].min()
@@ -534,43 +554,59 @@ else:
                 stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
             else:
                 range_total = y_max - y_min
-                # En Altair el gradiente vertical va de 1 (y_min) a 0 (y_max)
                 offset_zero = abs(y_max) / range_total
-                
-                # Ajuste para coordenada y2=0 (arriba) y1=1 (abajo) en la definicion de Altair
-                # Si usamos y1=1 (abajo) y2=0 (arriba), el offset 0 es el tope (max) y 1 es el fondo (min)
-                # Queremos que de offset 0 a X sea verde (positivo) y de X a 1 sea rojo (negativo)
-                # El punto cero está a una distancia de y_max desde arriba.
-                # Por tanto, offset = y_max / (y_max - y_min)
-                
                 stops = [
-                    alt.GradientStop(color='#00C805', offset=0),            # Verde Arriba
-                    alt.GradientStop(color='#00C805', offset=offset_zero),  # Verde hasta cero
-                    alt.GradientStop(color='#FF0000', offset=offset_zero),  # Rojo desde cero
-                    alt.GradientStop(color='#FF0000', offset=1)             # Rojo abajo
+                    alt.GradientStop(color='#00C805', offset=0),            
+                    alt.GradientStop(color='#00C805', offset=offset_zero),  
+                    alt.GradientStop(color='#FF0000', offset=offset_zero),  
+                    alt.GradientStop(color='#FF0000', offset=1)             
                 ]
 
-            area = alt.Chart(df_roi_w).mark_area(
+            # SELECCIÓN CROSSHAIR
+            hover_roi = alt.selection_point(
+                fields=['Fecha'], nearest=True, on='mouseover', empty=False
+            )
+
+            # GRÁFICO BASE
+            base_roi = alt.Chart(df_roi_w).encode(x=alt.X('Fecha:T', title=""))
+
+            # ÁREA GRADIENTE
+            area = base_roi.mark_area(
                 opacity=0.6,
                 line={'color': '#800080', 'strokeWidth': 2},
                 color=alt.Gradient(
-                    gradient='linear',
-                    stops=stops,
-                    x1=1, x2=1, y1=0, y2=1 # Eje Y invertido para cuadrar con logica visual (0=Top, 1=Bottom)
+                    gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1
                 )
-            ).encode(
-                x=alt.X('Fecha:T', title=""),
-                y=alt.Y('ROI_Pct', title="ROI Acumulado (%)"),
-                tooltip=[
-                    alt.Tooltip('Fecha', title='Fecha', format='%Y-%m-%d'),
-                    alt.Tooltip('ROI_Pct', title='ROI %', format='.2f'),
-                    alt.Tooltip('Cum_Profit', title='Bº Neto (€)', format='.2f')
-                ]
-            ).properties(height=250)
+            ).encode(y=alt.Y('ROI_Pct', title="ROI Acumulado (%)"))
             
-            rule = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2], opacity=0.5).encode(y='y')
+            # PUNTOS INVISIBLES (SELECTORES)
+            selectors = base_roi.mark_point().encode(opacity=alt.value(0)).add_params(hover_roi)
 
-            st.altair_chart((area + rule), use_container_width=True)
+            # LÍNEA NEGRA DISCONTINUA (CROSSHAIR)
+            tooltips_roi = [
+                alt.Tooltip('Fecha', title='Fecha', format='%Y-%m-%d'),
+                alt.Tooltip('ROI_Pct', title='ROI %', format='.2f'),
+                alt.Tooltip('Cum_Profit', title='Bº Neto (€)', format='.2f')
+            ]
+            rule_hover = base_roi.mark_rule(color='black', strokeDash=[4, 4]).encode(
+                opacity=alt.condition(hover_roi, alt.value(1), alt.value(0)),
+                tooltip=tooltips_roi
+            )
+            
+            # REGLA FIJA EN CERO
+            rule_zero = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='black', strokeDash=[2,2], opacity=0.5).encode(y='y')
+
+            # REGLAS DE STATS (MAX/MIN/AVG)
+            rules_stats = alt.Chart(df_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
+                y='Val', color=alt.Color('Color', scale=None)
+            )
+            
+            # TEXTO DE STATS (DERECHA)
+            text_stats = alt.Chart(df_stats).mark_text(align='right', dx=-5, dy=-10).encode(
+                x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
+            )
+
+            st.altair_chart((area + rule_zero + selectors + rule_hover + rules_stats + text_stats), use_container_width=True)
         else:
             st.info("No hay datos suficientes para generar la curva de ROI.")
 
@@ -581,7 +617,6 @@ else:
 
     with st.spinner("Actualizando panel de acciones..."):
         for t, info in cartera_global.items():
-            
             es_viva = info['acciones'] > 0.001
             tuvo_actividad = abs(info['pnl_cerrado']) > 0.01
             
