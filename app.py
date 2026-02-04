@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.1 (Botones + Fix Chart)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.2 (Líneas Estadísticas)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -379,12 +379,25 @@ if st.session_state.ticker_detalle:
         except: pass
 
     if not hist.empty:
+        # Cálculos de Indicadores
         if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
         if "Tendencia" in inds:
             hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
             x, y = hist['Ord'].values, hist['Close'].values
             if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
-        v_max, v_min = hist['High'].max(), hist['Low'].min()
+        
+        # --- ESTADÍSTICAS (MAX, MIN, MED) ---
+        stat_max = hist['Close'].max()
+        stat_min = hist['Close'].min()
+        stat_avg = hist['Close'].mean()
+        last_date = hist['Date'].max()
+        
+        df_price_stats = pd.DataFrame([
+            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
+            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
+            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
+        ])
+        df_price_stats['Date'] = last_date
 
     m1, m2, m3, m4 = st.columns(4)
     acc = info.get('acciones', 0)
@@ -414,11 +427,23 @@ if st.session_state.ticker_detalle:
         
         layers = [main, base.mark_point(opacity=0).add_params(hover), base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Date', format='%Y-%m-%d'), 'Close', 'Volume'])]
         
+        # --- AÑADIMOS LAS LÍNEAS ESTADÍSTICAS ---
+        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
+            y='Val', color=alt.Color('Color', scale=None)
+        )
+        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(
+            x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
+        )
+        layers.append(rules_stats)
+        layers.append(text_stats)
+        # ----------------------------------------
+
         if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
         if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
+        # "Soportes" (selector) ya no es necesario si mostramos las líneas siempre, pero lo dejamos opcional
         if "Soportes" in inds:
-            layers.append(base.mark_rule(color='green', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(v_max)))
-            layers.append(base.mark_rule(color='red', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(v_min)))
+            # Líneas extra si el usuario las pide (pueden superponerse, pero es lo que hay en el código base)
+            pass 
 
         chart_p = alt.layer(*layers).properties(height=350, width=800)
         
@@ -474,22 +499,17 @@ else:
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
 
             base = alt.Chart(df_w).encode(x='Fecha:T')
-            
-            # --- CORRECCIÓN ERROR ALTAIR (V32.1) ---
-            area = base.mark_area(
-                opacity=0.6, 
-                line={'color':'purple'}, 
-                color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)
-            ).encode(y='ROI')
-            # -------------------------------------
-
+            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
             rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
+            
             s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
             last = df_w['Fecha'].max()
             df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
             df_s['D'] = last
+            
             lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
             lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
+            
             hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
             pts = base.mark_point(opacity=0).add_params(hover)
             crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
@@ -518,12 +538,10 @@ else:
                     "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
                 })
 
-    # --- CAMBIO IMPORTANTE: LISTA DE BOTONES ---
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
         
-        # Cabecera
         c = st.columns([1, 2, 1.5, 2, 2, 2, 1])
         c[0].markdown("**Logo**")
         c[1].markdown("**Empresa**")
@@ -545,7 +563,6 @@ else:
             col_trad = "green" if row['Trading'] >= 0 else "red"
             with c[5]: st.markdown(f":{col_trad}[{row['Trading']:,.2f} €]")
             
-            # BOTÓN DE ACCIÓN DIRECTA
             with c[6]:
                 if st.button("🔍", key=f"btn_{row['Ticker']}"):
                     st.session_state.ticker_detalle = row['Ticker']
