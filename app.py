@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.10 (Puntos Redondos)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.11 (Tooltip Unificado)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -55,10 +55,8 @@ def register_new_user(username, password, name):
 
 def login_system():
     if st.session_state.current_user: return True
-    
     try: query_params = st.query_params
     except: query_params = st.experimental_get_query_params()
-        
     invite_code_url = query_params.get("invite", "")
     if isinstance(invite_code_url, list): invite_code_url = invite_code_url[0]
 
@@ -76,7 +74,6 @@ def login_system():
                     st.session_state.user_role = users_db[user_in].get('Rol', 'user')
                     st.rerun()
                 else: st.error("Incorrecto")
-    
     with tab2:
         with st.form("register_form"):
             new_user = st.text_input("Nuevo Usuario")
@@ -104,7 +101,6 @@ def traducir_texto(texto):
     except: return texto
 
 def fmt_dinamico(valor, sufijo=""):
-    """Formatea hasta 6 decimales quitando ceros extra + sufijo"""
     if valor is None: return ""
     s = f"{valor:,.6f}"
     s = s.rstrip('0').rstrip('.')
@@ -259,43 +255,28 @@ with st.sidebar:
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
-                
                 c1, c2 = st.columns(2)
                 dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0)
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-                
                 st.markdown("---")
                 dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(mi_zona))), st.time_input("Hora", datetime.now(ZoneInfo(mi_zona))))
-                
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         nom, pre = None, 0.0
                         with st.spinner("Buscando datos..."):
                             nom, pre, _ = get_stock_data_fmp(ticker)
                             if not nom: nom, pre, _ = get_stock_data_yahoo(ticker)
-                        
                         nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
                         precio_final = precio_manual if precio_manual > 0 else (pre if pre else 0.0)
-
-                        datos = {
-                            "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
-                            "Moneda": moneda, "Cantidad": float(dinero_total),
-                            "Precio": float(precio_final), "Comision": float(comision),
-                            "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
-                        }
-                        
+                        datos = {"Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, "Moneda": moneda, "Cantidad": float(dinero_total), "Precio": float(precio_final), "Comision": float(comision), "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")}
                         if precio_final > 0: guardar_en_airtable(datos)
-                        else:
-                            st.session_state.pending_data = datos
-                            st.rerun()
+                        else: st.session_state.pending_data = datos; st.rerun()
         else:
             st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
             c_si, c_no = st.columns(2)
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
-            if c_no.button("❌ Revisar"): 
-                st.session_state.pending_data = None
-                st.rerun()
+            if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
 # 3. MOTOR DE CÁLCULO
 cartera = {}
@@ -308,46 +289,33 @@ if not df.empty:
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         fx = get_exchange_rate_now(mon, MONEDA_BASE)
-        
         dinero_eur = dinero * fx
         if precio <= 0: precio = 1
         acciones_op = dinero / precio 
-        
         en_rango = (año_seleccionado == "Todos los años") or (row.get('Año') == int(año_seleccionado))
         delta_p, delta_i = 0.0, 0.0
-
         if en_rango: total_comi += (comi * fx)
         delta_p -= (comi * fx)
-
-        if tick not in cartera:
-            cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': row.get('Descripcion', tick), 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
-        
+        if tick not in cartera: cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': row.get('Descripcion', tick), 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': []}
         row['Fecha_Raw'] = row.get('Fecha_dt')
         cartera[tick]['movimientos'].append(row)
-
         if tipo == "Compra":
             delta_i = dinero_eur
             cartera[tick]['acciones'] += acciones_op
             cartera[tick]['coste_total_eur'] += dinero_eur
             if en_rango: compras_eur += dinero_eur
             if cartera[tick]['acciones'] > 0: cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
-
         elif tipo == "Venta":
             coste_prop = acciones_op * cartera[tick]['pmc']
             beneficio = dinero_eur - coste_prop
             delta_p += beneficio
-            if en_rango:
-                ventas_coste += coste_prop
-                pnl_cerrado += beneficio
-                cartera[tick]['pnl_cerrado'] += beneficio
+            if en_rango: ventas_coste += coste_prop; pnl_cerrado += beneficio; cartera[tick]['pnl_cerrado'] += beneficio
             cartera[tick]['acciones'] -= acciones_op
             cartera[tick]['coste_total_eur'] -= coste_prop
             if cartera[tick]['acciones'] < 0: cartera[tick]['acciones'] = 0
-
         elif tipo == "Dividendo":
             delta_p += dinero_eur
             if en_rango: total_div += dinero_eur
-        
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==========================================
@@ -356,21 +324,16 @@ if not df.empty:
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
     info = cartera.get(t, {})
-    if st.button("⬅️ Volver", type="secondary"):
-        st.session_state.ticker_detalle = None
-        st.rerun()
+    if st.button("⬅️ Volver", type="secondary"): st.session_state.ticker_detalle = None; st.rerun()
     st.divider()
     c1, c2 = st.columns([1, 5])
     with c1: st.image(get_logo_url(t), width=80)
-    with c2: 
-        st.title(f"{info.get('desc', t)} ({t})")
-        st.caption("Ficha detallada")
+    with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
     c_time, c_ind = st.columns([1, 3])
     label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
     periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
     width_map = {"1 Mes": 20, "6 Meses": 6, "1 Año": 3, "5 Años": 1, "Todo": 1}
-    
     inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
     sma_p = 50
     if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
@@ -397,7 +360,6 @@ if st.session_state.ticker_detalle:
         stat_min = hist['Close'].min()
         stat_avg = hist['Close'].mean()
         last_date = hist['Date'].max()
-        
         df_price_stats = pd.DataFrame([
             {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
             {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
@@ -423,52 +385,45 @@ if st.session_state.ticker_detalle:
     if not hist.empty:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
-        
-        if type_g == "Línea":
-            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
+        if type_g == "Línea": main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
         else:
             rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             main = rule + bar
         
-        layers = [main, base.mark_point(opacity=0).add_params(hover), base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Date', format='%Y-%m-%d'), 'Close', 'Volume'])]
+        # --- TOOLTIPS UNIFICADOS (V32.11) ---
+        tooltips_completos = [
+            alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
+            alt.Tooltip('Close', title='Precio', format=',.2f'),
+            alt.Tooltip('Volume', title='Volumen', format=',')
+        ]
+
+        layers = [
+            main, 
+            base.mark_point(opacity=0).add_params(hover), 
+            base.mark_rule(color='black', strokeDash=[4,4]).encode(
+                opacity=alt.condition(hover, alt.value(1), alt.value(0)), 
+                tooltip=tooltips_completos
+            )
+        ]
         
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
         text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
-        layers.append(rules_stats)
-        layers.append(text_stats)
+        layers.append(rules_stats); layers.append(text_stats)
 
-        # --- CAMBIO V32.10: PUNTOS REDONDOS ---
         movs_raw = info.get('movimientos', [])
         if movs_raw:
             df_m_chart = pd.DataFrame(movs_raw)
             df_m_chart['Date'] = pd.to_datetime(df_m_chart['Fecha_Raw']).dt.date
             min_date = hist['Date'].min()
             df_m_chart = df_m_chart[df_m_chart['Date'] >= min_date]
-            
             if not df_m_chart.empty:
                 compras = df_m_chart[df_m_chart['Tipo'] == 'Compra']
                 if not compras.empty:
-                    # shape='circle' para punto redondo
-                    c_buy = alt.Chart(compras).mark_point(
-                        shape='circle', size=150, color='#0044FF', filled=True, opacity=1
-                    ).encode(
-                        x='Date:T', y='Precio', 
-                        tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', format='.2f'), alt.Tooltip('Cantidad', title='Total Invest')]
-                    )
-                    layers.append(c_buy)
-                
+                    layers.append(alt.Chart(compras).mark_point(shape='circle', size=150, color='#0044FF', filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', format='.2f'), alt.Tooltip('Cantidad', title='Total Invest')]))
                 ventas = df_m_chart[df_m_chart['Tipo'] == 'Venta']
                 if not ventas.empty:
-                    # shape='circle' para punto redondo
-                    c_sell = alt.Chart(ventas).mark_point(
-                        shape='circle', size=150, color='#800020', filled=True, opacity=1
-                    ).encode(
-                        x='Date:T', y='Precio',
-                        tooltip=['Date', 'Precio', 'Cantidad']
-                    )
-                    layers.append(c_sell)
-        # --------------------------------------
+                    layers.append(alt.Chart(ventas).mark_point(shape='circle', size=150, color='#800020', filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
 
         if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
         if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
@@ -500,7 +455,6 @@ else:
     st.title("💼 Dashboard")
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
-    
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
     m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
@@ -551,59 +505,33 @@ else:
                 if i['acciones'] > 0.001:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
-                
                 val = i['acciones'] * p_now if p_now else 0
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
-                
-                tabla.append({
-                    "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], 
-                    "Valor": val, 
-                    "PMC": i['pmc'],
-                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat
-                })
+                tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
-        
         c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-        
-        tooltips = [
-            "Logo oficial", "Símbolo bursátil", "Nombre Cía.", 
-            "Acciones en cartera", "Precio Medio Compra", 
-            "Coste total invertido", "Valor actual mercado", 
-            "Rentabilidad Viva (%)", "Bº Cerrado (Realizado)", 
-            "Ver Detalle"
-        ]
+        tooltips = ["Logo oficial", "Símbolo bursátil", "Nombre Cía.", "Acciones en cartera", "Precio Medio Compra", "Coste total invertido", "Valor actual mercado", "Rentabilidad Viva (%)", "Bº Cerrado (Realizado)", "Ver Detalle"]
         titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
-
-        for i, title in enumerate(titles):
-            c[i].markdown(f'<div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">{title}</div>', unsafe_allow_html=True)
-            
+        for i, title in enumerate(titles): c[i].markdown(f'<div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">{title}</div>', unsafe_allow_html=True)
         st.markdown("---")
-
         for row in tabla:
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
             with c[0]: st.image(row["Logo"], width=30)
             with c[1]: st.write(f"**{row['Ticker']}**")
             with c[2]: st.caption(row["Empresa"])
-            # --- FORMATO V32.6 ---
             with c[3]: st.write(fmt_dinamico(row['Acciones']))
             with c[4]: st.write(fmt_dinamico(row['PMC'], '€'))
             with c[5]: st.write(fmt_dinamico(row['Invertido'], '€'))
             with c[6]: st.write(f"**{fmt_dinamico(row['Valor'], '€')}**") 
-            
             color_lat = "green" if row['Latente'] >= 0 else "red"
             with c[7]: st.markdown(f":{color_lat}[{fmt_dinamico(row['Latente']*100, '%')}]")
-            
             color_trad = "green" if row['Trading'] >= 0 else "red"
             with c[8]: st.markdown(f":{color_trad}[{fmt_dinamico(row['Trading'], '€')}]")
-            
             with c[9]:
-                if st.button("🔍", key=f"btn_{row['Ticker']}"):
-                    st.session_state.ticker_detalle = row['Ticker']
-                    st.rerun()
+                if st.button("🔍", key=f"btn_{row['Ticker']}"): st.session_state.ticker_detalle = row['Ticker']; st.rerun()
             st.divider()
     
     st.divider()
@@ -611,22 +539,11 @@ else:
     if not df.empty:
         c1, c2 = st.columns(2)
         c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
-        try:
-            c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
+        try: c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: pass
-        
-        # --- FIX V32.8: COLUMNAS, ORDEN Y USUARIO ---
         cols_deseadas = ['Fecha_str', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Usuario']
         cols_final = [c for c in cols_deseadas if c in df.columns]
         df_display = df[cols_final].copy()
-        
-        df_display = df_display.rename(columns={
-            'Fecha_str': 'Fecha',
-            'Descripcion': 'Empresa',
-            'Comision': 'Comisión'
-        })
-        
-        def color_rows(r): 
-            return ['']*len(r)
-        
+        df_display = df_display.rename(columns={'Fecha_str': 'Fecha', 'Descripcion': 'Empresa', 'Comision': 'Comisión'})
+        def color_rows(r): return ['']*len(r)
         st.dataframe(df_display.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
