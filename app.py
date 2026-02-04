@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.3 (Columnas Completas)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.4 (Tooltips en Lista)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -379,6 +379,7 @@ if st.session_state.ticker_detalle:
         except: pass
 
     if not hist.empty:
+        # Cálculos
         if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
         if "Tendencia" in inds:
             hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
@@ -518,18 +519,52 @@ else:
                 
                 tabla.append({
                     "Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t,
-                    "Acciones": i['acciones'], "PMC": i['pmc'],
-                    "Valor": val, "Invertido": i['coste_total_eur'],
-                    "Trading": i['pnl_cerrado'], "Latente": r_lat
+                    "Acciones": i['acciones'], 
+                    "Valor Actual": val, 
+                    "PMC": i['pmc'],
+                    "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "% Latente": r_lat
                 })
 
     if tabla:
         st.subheader("📊 Cartera Detallada")
         st.markdown("---")
-        # Columnas: Logo, Ticker, Empresa, Acciones, PMC, Invertido, Valor, Latente, Trading, Ver
+        
+        # DEFINICIÓN DE COLUMNAS Y ENCABEZADOS CON TOOLTIPS
         c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-        headers = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
-        for i, h in enumerate(headers): c[i].markdown(f"**{h}**")
+        
+        # (Texto Visible, Texto Tooltip)
+        headers_info = [
+            ("Logo", "Logo oficial"),
+            ("Ticker", "Código bolsa"),
+            ("Empresa", "Nombre Cía."),
+            ("Acciones", "Títulos"),
+            ("PMC", "Precio Medio Compra"),
+            ("Invertido", "Coste Total"),
+            ("Valor", "Valor Mercado"),
+            "% Latente", "Rentabilidad Viva",
+            "Trading", "Bº Cerrado",
+            "Ver", "Detalle"
+        ]
+        
+        # LISTA MANUAL DE HEADERS PARA QUE CUADRE EL INDICE
+        # Ajustamos a mano para meter el HTML
+        tooltips = [
+            "Logo de la empresa", "Símbolo bursátil", "Nombre de la compañía", 
+            "Cantidad de acciones en cartera", "Precio Medio de Compra", 
+            "Capital total invertido (Coste)", "Valor actual de mercado", 
+            "Rentabilidad no realizada (Latente)", "Beneficio/Pérdida ya cerrada (Realizada)", 
+            "Ver gráfico detallado"
+        ]
+        titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
+
+        for i, title in enumerate(titles):
+            # Inyección de HTML para el tooltip
+            c[i].markdown(f'''
+                <div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">
+                    {title}
+                </div>
+            ''', unsafe_allow_html=True)
+            
         st.markdown("---")
 
         for row in tabla:
@@ -542,8 +577,8 @@ else:
             with c[5]: st.write(f"{row['Invertido']:,.2f}")
             with c[6]: st.write(f"**{row['Valor']:,.2f}**")
             
-            color_lat = "green" if row['Latente'] >= 0 else "red"
-            with c[7]: st.markdown(f":{color_lat}[{row['Latente']:.2%}]")
+            color_lat = "green" if row['% Latente'] >= 0 else "red"
+            with c[7]: st.markdown(f":{color_lat}[{row['% Latente']:.2%}]")
             
             color_trad = "green" if row['Trading'] >= 0 else "red"
             with c[8]: st.markdown(f":{color_trad}[{row['Trading']:,.2f}]")
