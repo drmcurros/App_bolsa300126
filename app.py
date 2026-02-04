@@ -628,4 +628,71 @@ else:
                 "Ticker": st.column_config.TextColumn("Ticker"),
                 "Acciones": st.column_config.NumberColumn("Acciones", format="%.4f"),
                 "PMC": st.column_config.NumberColumn("PMC", format="%.2f €"),
-                "Saldo Invertido": st.column_config
+                "Saldo Invertido": st.column_config.NumberColumn("Invertido", format="%.2f €"),
+                "Bº/P (Cerrado)": st.column_config.NumberColumn("Trading", format="%.2f €"),
+                "% Latente": st.column_config.NumberColumn("% Latente", format="%.2f %%")
+            },
+            use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row"
+        )
+        
+        if len(event.selection.rows) > 0:
+            idx = event.selection.rows[0]
+            st.session_state.ticker_detalle = df_show.iloc[idx]["Ticker"]
+            st.rerun()
+    else:
+        st.info("No hay datos para el periodo seleccionado.")
+
+    st.divider()
+    st.subheader(f"📜 Historial de Órdenes y Dividendos ({año_seleccionado})")
+    
+    if not df.empty:
+        df_historial = df.copy()
+        if año_seleccionado != "Todos los años":
+            df_historial = df_historial[df_historial['Año'] == int(año_seleccionado)]
+        
+        if not df_historial.empty:
+            cols_ver = ['Fecha_str', 'Tipo', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision']
+            cols_ver = [c for c in cols_ver if c in df_historial.columns]
+            df_export = df_historial[cols_ver].sort_values(by='Fecha_str', ascending=False)
+            
+            c_csv, c_pdf = st.columns(2)
+            
+            csv = df_export.to_csv(index=False).encode('utf-8')
+            c_csv.download_button(
+                label="📥 Exportar a Excel (CSV)",
+                data=csv,
+                file_name=f"historial_{año_seleccionado}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+            try:
+                pdf_bytes = generar_pdf_historial(df_export, f"Historial {año_seleccionado}")
+                c_pdf.download_button(
+                    label="📄 Exportar a PDF",
+                    data=pdf_bytes,
+                    file_name=f"historial_{año_seleccionado}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except Exception as e:
+                c_pdf.warning(f"Error generando PDF: {e}")
+
+            def color_rows(row):
+                color = ''
+                if row['Tipo'] == 'Compra':
+                    color = 'color: green'
+                elif row['Tipo'] == 'Venta':
+                    color = 'color: #800020'
+                elif row['Tipo'] == 'Dividendo':
+                    color = 'color: #FF8C00'
+                return [color] * len(row)
+
+            st.dataframe(
+                df_export.style.apply(color_rows, axis=1),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No hay operaciones registradas en este periodo.")
