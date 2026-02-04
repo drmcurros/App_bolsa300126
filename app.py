@@ -548,4 +548,9 @@ else:
         c1, c2 = st.columns(2)
         c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try:
-            c2.download_button("Descargar PDF", generar_pdf_hist
+            c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
+        except: pass
+        def color_rows(r): 
+            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
+            return [f'color: {c}']*len(r)
+        st.dataframe(df.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
