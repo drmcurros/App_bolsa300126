@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V25.1 (Fix Volumen)", layout="wide") 
+st.set_page_config(page_title="Gestor V26.0 (Volumen Separado)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -395,7 +395,6 @@ if st.session_state.ticker_detalle:
             historia = ticker_obj.history(period=periodo_api)
             historia = historia.reset_index()
             historia['Date'] = pd.to_datetime(historia['Date']).dt.date
-            # Limpieza para evitar errores en volumen
             historia['Volume'] = pd.to_numeric(historia['Volume'], errors='coerce').fillna(0)
         except: pass
 
@@ -437,7 +436,7 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # 1. ESTADÍSTICAS (MAX/MIN/AVG)
+        # STATS
         stat_max = historia['Close'].max()
         stat_min = historia['Close'].min()
         stat_avg = historia['Close'].mean()
@@ -453,7 +452,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # 2. CAPA PRECIO (VELAS O LÍNEA)
+        # --- CHART PRECIO (SUPERIOR) ---
         grafico_base = None
         if tipo_grafico == "Línea":
             grafico_base = base.mark_line(color='#29b5e8').encode(
@@ -472,7 +471,7 @@ if st.session_state.ticker_detalle:
             )
             grafico_base = rule + bar
 
-        # 3. INTERACTIVIDAD (CROSSHAIR + TOOLTIP)
+        # Interacción
         points = base.mark_point().encode(opacity=alt.value(0)).add_params(hover)
         tooltips = [
             alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
@@ -484,7 +483,7 @@ if st.session_state.ticker_detalle:
             tooltip=tooltips
         )
 
-        # 4. CAPAS DE ESTADÍSTICAS
+        # Stats Lines
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
             y='Val', color=alt.Color('Color', scale=None)
         )
@@ -492,7 +491,7 @@ if st.session_state.ticker_detalle:
             x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
         )
 
-        # 5. CAPAS DE OPERACIONES (TRIÁNGULOS)
+        # Buy/Sell markers
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -522,20 +521,9 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        # --- ENSAMBLAJE FINAL DEL GRÁFICO (FIX V25.1) ---
+        # Ensamble Precio
+        layers_precio = [grafico_base, points, rule_vertical, rules_stats, text_stats, capa_compras, capa_ventas]
         
-        # Grupo 1: Capas relacionadas con el PRECIO (Eje Y Izquierdo)
-        layers_precio = [
-            grafico_base, 
-            points, 
-            rule_vertical, 
-            rules_stats, 
-            text_stats, 
-            capa_compras, 
-            capa_ventas
-        ]
-
-        # Añadir indicadores de precio si existen
         if "Media Móvil (SMA 50)" in indicadores:
             sma = base.mark_line(color='orange', strokeDash=[2,2]).encode(
                 y='SMA_50', tooltip=[alt.Tooltip('SMA_50', title='SMA 50', format='.2f')]
@@ -554,21 +542,36 @@ if st.session_state.ticker_detalle:
             layers_precio.append(res_line)
             layers_precio.append(sup_line)
 
-        # Combinamos todo lo que es PRECIO en un solo gráfico
-        chart_precio = alt.layer(*layers_precio)
+        chart_precio = alt.layer(*layers_precio).properties(height=350)
 
-        # Grupo 2: Capa de VOLUMEN (Eje Y Derecho)
+        # --- CHART VOLUMEN (INFERIOR - SI ACTIVO) ---
         if "Volumen" in indicadores:
-            vol = base.mark_bar(opacity=0.3, color='#CCCCCC').encode(
-                y=alt.Y('Volume', axis=alt.Axis(title='Volumen', orient='right', grid=False)),
-                # Quitamos tooltip del volumen para no ensuciar la cruz del precio
+            # Color condicional del volumen: Verde si Close > Open, Rojo si Close < Open
+            vol_color = alt.condition(
+                "datum.Open < datum.Close", 
+                alt.value("#00C805"), # Verde
+                alt.value("#FF0000")  # Rojo
             )
-            # FUSIONAMOS CON ESCALAS INDEPENDIENTES
-            chart_final = alt.layer(chart_precio, vol).resolve_scale(y='independent')
+            
+            # Barras de volumen
+            vol_bar = base.mark_bar().encode(
+                y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')),
+                color=vol_color
+            ).properties(height=100)
+            
+            # Cruceta compartida en volumen
+            vol_rule = base.mark_rule(color='black', strokeDash=[4, 4]).encode(
+                opacity=alt.condition(hover, alt.value(1), alt.value(0))
+            )
+            
+            chart_volumen = alt.layer(vol_bar, vol_rule)
+            
+            # Concatenación Vertical (Precio Arriba, Volumen Abajo)
+            final_chart = alt.vconcat(chart_precio, chart_volumen).resolve_scale(x='shared')
         else:
-            chart_final = chart_precio
+            final_chart = chart_precio
 
-        st.altair_chart(chart_final, use_container_width=True)
+        st.altair_chart(final_chart, use_container_width=True)
         st.caption(f"🔵 **Compra (Azul)** | 🍷 **Venta (Burdeos)**")
         
     else:
