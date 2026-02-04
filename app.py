@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V14.2 (Colores Fila)", layout="wide") 
+st.set_page_config(page_title="Gestor V15.0 (Auto-Nombres)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -49,7 +49,9 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
+# --- FUNCIONES DE DATOS MEJORADAS ---
 def get_stock_data_fmp(ticker):
+    """Retorna: (Nombre Empresa, Precio Actual, Descripción Larga)"""
     try:
         api_key = st.secrets["fmp"]["api_key"]
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
@@ -61,13 +63,20 @@ def get_stock_data_fmp(ticker):
     except: return None, None, None
 
 def get_stock_data_yahoo(ticker):
+    """Retorna: (Nombre Empresa, Precio Actual, Descripción Larga)"""
     try:
         stock = yf.Ticker(ticker)
+        # Intentamos obtener nombre y precio
         precio = stock.fast_info.last_price
-        nombre = stock.info.get('longName') or stock.info.get('shortName') or ticker
-        desc = stock.info.get('longBusinessSummary') or "Sin descripción."
+        
+        # Yahoo a veces guarda el nombre en 'longName' o 'shortName'
+        info = stock.info
+        nombre = info.get('longName') or info.get('shortName') or ticker
+        desc = info.get('longBusinessSummary') or "Descripción no disponible en Yahoo."
+        
         if precio: return nombre, precio, desc
     except: 
+        # Fallback básico si falla info
         try:
             hist = stock.history(period="1d")
             if not hist.empty:
@@ -80,7 +89,7 @@ def guardar_en_airtable(record):
         api = Api(st.secrets["airtable"]["api_token"])
         table = api.table(st.secrets["airtable"]["base_id"], st.secrets["airtable"]["table_name"])
         table.create(record)
-        st.success(f"✅ Guardado: {record['Ticker']}")
+        st.success(f"✅ Guardado: {record['Descripcion']} ({record['Ticker']})")
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
         st.rerun()
@@ -198,9 +207,10 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
+                st.info("💡 Consejo: Si dejas la 'Descripción' vacía, buscaré el nombre automáticamente.")
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
-                desc_manual = st.text_input("Descripción (Opcional)")
+                desc_manual = st.text_input("Descripción (Opcional - Auto si vacío)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 
                 c1, c2 = st.columns(2)
@@ -218,25 +228,39 @@ with st.sidebar:
                 
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
-                        nom, pre = None, 0.0
-                        with st.spinner("Consultando precio..."):
-                            nom, pre = get_stock_data_fmp(ticker)
-                            if not nom: nom, pre = get_stock_data_yahoo(ticker)
                         
-                        if desc_manual: nom = desc_manual
-                        if not nom: nom = ticker
-                        if precio_manual > 0: pre = precio_manual
-                        if not pre: pre = 0.0
+                        # --- LÓGICA DE AUTO-COMPLETADO ---
+                        nom_api, pre_api = None, 0.0
+                        with st.spinner(f"Buscando datos de {ticker}..."):
+                            # Ignoramos la descripcion larga aqui (_), solo queremos el nombre
+                            nom_api, pre_api, _ = get_stock_data_fmp(ticker)
+                            if not nom_api: 
+                                nom_api, pre_api, _ = get_stock_data_yahoo(ticker)
+                        
+                        # Determinamos el nombre final
+                        nombre_final = ""
+                        if desc_manual:
+                            nombre_final = desc_manual # Prioridad al usuario
+                        elif nom_api:
+                            nombre_final = nom_api # Auto-detectado
+                        else:
+                            nombre_final = ticker # Fallback si falla todo
+                        
+                        # Determinamos el precio
+                        precio_final = 0.0
+                        if precio_manual > 0: precio_final = precio_manual
+                        elif pre_api: precio_final = pre_api
+                        # ---------------------------------
 
                         dt_final = datetime.combine(f_in, h_in)
                         datos = {
-                            "Tipo": tipo, "Ticker": ticker, "Descripcion": nom, 
+                            "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
                             "Moneda": moneda, "Cantidad": float(dinero_total),
-                            "Precio": float(pre), "Comision": float(comision),
+                            "Precio": float(precio_final), "Comision": float(comision),
                             "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
                         }
                         
-                        if pre > 0: guardar_en_airtable(datos)
+                        if precio_final > 0: guardar_en_airtable(datos)
                         else:
                             st.session_state.pending_data = datos
                             st.rerun()
@@ -571,18 +595,14 @@ else:
             except Exception as e:
                 c_pdf.warning(f"Error generando PDF: {e}")
 
-            # NUEVA LÓGICA DE COLORES POR FILA COMPLETA
             def color_rows(row):
                 color = ''
-                # Colores para toda la fila
                 if row['Tipo'] == 'Compra':
                     color = 'color: green'
                 elif row['Tipo'] == 'Venta':
                     color = 'color: #800020' # Burdeos
                 elif row['Tipo'] == 'Dividendo':
-                    color = 'color: #FF8C00' # Naranja Oscuro (Readable on white)
-                
-                # Devuelve una lista con el mismo estilo para cada celda de la fila
+                    color = 'color: #FF8C00' # Naranja Oscuro
                 return [color] * len(row)
 
             st.dataframe(
