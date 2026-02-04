@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.13 (Tooltip Completo)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.14 (Fix AttributeError)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -383,18 +383,9 @@ if st.session_state.ticker_detalle:
 
     st.subheader("📈 Gráfico")
     if not hist.empty:
-        # --- SELECTOR GLOBAL ---
-        hover = alt.selection_point(
-            fields=['Date'], 
-            nearest=True, 
-            on='mouseover', 
-            empty=False,
-            clear='mouseout'
-        )
-
+        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # Gráfico Principal
         if type_g == "Línea":
             main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
         else:
@@ -402,30 +393,25 @@ if st.session_state.ticker_detalle:
             bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             main = rule + bar
         
-        # --- FIX V32.13: TOOLTIP EN PUNTOS INVISIBLES (GARANTIZA DATOS) ---
         tooltips_completos = [
             alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
             alt.Tooltip('Close', title='Precio', format=',.2f'),
             alt.Tooltip('Volume', title='Volumen', format=',')
         ]
         
-        points = main.mark_point().encode(
+        # --- FIX V32.14: USO DE 'base' EN LUGAR DE 'main' PARA mark_point ---
+        points = base.mark_point().encode(
+            y=alt.Y('Close', scale=alt.Scale(zero=False)), # Importante mantener la escala del eje Y
             opacity=alt.value(0),
-            tooltip=tooltips_completos # <--- AQUI ESTÁ LA MAGIA
+            tooltip=tooltips_completos
         ).add_params(hover)
 
-        # Regla Visual (Solo línea, sin datos)
-        rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(
-            opacity=alt.condition(hover, alt.value(1), alt.value(0))
-        ).transform_filter(hover)
-
-        # Stats
+        rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
         rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
         text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
         
         layers = [main, points, rule_hover, rules_stats, text_stats]
 
-        # Buy/Sell Points
         movs_raw = info.get('movimientos', [])
         if movs_raw:
             df_m_chart = pd.DataFrame(movs_raw)
