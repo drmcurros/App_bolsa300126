@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fpdf import FPDF 
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V27.0 (SMA Dinámica)", layout="wide") 
+st.set_page_config(page_title="Gestor V28.0 (Gráfico Limpio)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -377,14 +377,13 @@ if st.session_state.ticker_detalle:
     label_tiempo = c_time.select_slider("Periodo", options=list(opciones_tiempo.keys()), value="1 Año")
     periodo_api = opciones_tiempo[label_tiempo]
     
-    # NUEVO: OPCIONES SMA DINÁMICA
     indicadores = c_ind.multiselect(
         "Indicadores Técnicos",
         ["Volumen", "Media Móvil (SMA)", "Soportes/Resistencias", "Línea de Tendencia"],
         default=[]
     )
     
-    sma_period = 50 # Default
+    sma_period = 50 
     if "Media Móvil (SMA)" in indicadores:
         sma_period = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
     
@@ -406,11 +405,11 @@ if st.session_state.ticker_detalle:
     # --- CÁLCULO DE INDICADORES ---
     if not historia.empty:
         if "Media Móvil (SMA)" in indicadores:
-            # USAMOS EL PERIODO SELECCIONADO
             historia['SMA_Selected'] = historia['Close'].rolling(window=sma_period).mean()
         
         val_max = historia['High'].max()
         val_min = historia['Low'].min()
+        last_date = historia['Date'].max()
         
         if "Línea de Tendencia" in indicadores:
             historia['Date_Ord'] = pd.to_datetime(historia['Date']).map(datetime.toordinal)
@@ -442,19 +441,6 @@ if st.session_state.ticker_detalle:
     st.subheader(f"📈 Evolución ({tipo_grafico})")
     
     if not historia.empty:
-        # STATS
-        stat_max = historia['Close'].max()
-        stat_min = historia['Close'].min()
-        stat_avg = historia['Close'].mean()
-        last_date = historia['Date'].max()
-        
-        df_price_stats = pd.DataFrame([
-            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
-            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
-            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
-        ])
-        df_price_stats['Date'] = last_date
-
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False)
         base = alt.Chart(historia).encode(x=alt.X('Date:T', title='Fecha'))
         
@@ -488,13 +474,6 @@ if st.session_state.ticker_detalle:
             tooltip=tooltips
         )
 
-        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
-            y='Val', color=alt.Color('Color', scale=None)
-        )
-        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(
-            x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
-        )
-
         movs_raw = info.get('movimientos', [])
         capa_compras = alt.Chart(pd.DataFrame()).mark_point()
         capa_ventas = alt.Chart(pd.DataFrame()).mark_point()
@@ -524,8 +503,8 @@ if st.session_state.ticker_detalle:
                     )
                     capa_ventas = rule_venta + point_venta
 
-        # Ensamble Precio
-        layers_precio = [grafico_base, points, rule_vertical, rules_stats, text_stats, capa_compras, capa_ventas]
+        # Ensamble Precio (SIN INDICADORES FIJOS)
+        layers_precio = [grafico_base, points, rule_vertical, capa_compras, capa_ventas]
         
         if "Media Móvil (SMA)" in indicadores:
             sma = base.mark_line(color='orange', strokeDash=[2,2]).encode(
@@ -540,22 +519,33 @@ if st.session_state.ticker_detalle:
             layers_precio.append(trend)
 
         if "Soportes/Resistencias" in indicadores:
-            res_line = base.mark_rule(color='green', strokeDash=[5,5]).encode(y=alt.datum(val_max))
-            sup_line = base.mark_rule(color='red', strokeDash=[5,5]).encode(y=alt.datum(val_min))
+            # Líneas Sutiles
+            res_line = base.mark_rule(color='green', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(val_max))
+            sup_line = base.mark_rule(color='red', strokeDash=[5,5], opacity=0.5).encode(y=alt.datum(val_min))
+            
+            # Textos Soportes/Resistencias
+            df_sr = pd.DataFrame([
+                {'Val': val_max, 'Label': f"Max: {val_max:.2f}", 'Color': 'green'},
+                {'Val': val_min, 'Label': f"Min: {val_min:.2f}", 'Color': 'red'}
+            ])
+            df_sr['Date'] = last_date
+            
+            text_sr = alt.Chart(df_sr).mark_text(align='left', dx=5, dy=-5).encode(
+                x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None)
+            )
+            
             layers_precio.append(res_line)
             layers_precio.append(sup_line)
+            layers_precio.append(text_sr)
 
-        # Forzamos ancho explícito
         chart_precio = alt.layer(*layers_precio).properties(height=350, width=800)
 
-        # --- CHART VOLUMEN (INFERIOR - SI ACTIVO) ---
         if "Volumen" in indicadores:
             vol_color = alt.condition(
                 "datum.Open < datum.Close", 
-                alt.value("#00C805"), # Verde
-                alt.value("#FF0000")  # Rojo
+                alt.value("#00C805"), 
+                alt.value("#FF0000") 
             )
-            
             vol_bar = base.mark_bar().encode(
                 y=alt.Y('Volume', axis=alt.Axis(title='Volumen', format='~s')),
                 color=vol_color
@@ -564,7 +554,6 @@ if st.session_state.ticker_detalle:
             vol_rule = base.mark_rule(color='black', strokeDash=[4, 4]).encode(
                 opacity=alt.condition(hover, alt.value(1), alt.value(0))
             )
-            
             chart_volumen = alt.layer(vol_bar, vol_rule)
             
             final_chart = alt.vconcat(chart_precio, chart_volumen).resolve_scale(x='shared')
