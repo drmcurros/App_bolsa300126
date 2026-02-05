@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.24 (Stable)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.25 (Dual ISIN)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -115,18 +115,34 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
         return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
 
-# --- CAPTURA DE ISIN CON CACHÉ ---
+# --- CAPTURA DE ISIN DOBLE (Yahoo + FMP) ---
 @st.cache_data(show_spinner=False)
 def get_ticker_isin(ticker):
-    """Intenta obtener el ISIN de Yahoo Finance. Cacheado para velocidad."""
+    """
+    Intenta obtener el ISIN. 
+    1. Primero consulta Yahoo Finance (Rápido).
+    2. Si falla, consulta Financial Modeling Prep (Más fiable).
+    """
+    # 1. Intento Yahoo
     try:
         t = yf.Ticker(ticker)
         isin = t.isin
-        if isin and isin != '-':
+        if isin and isin != '-' and len(isin) > 5:
             return isin
-        return ""
-    except:
-        return ""
+    except: pass
+
+    # 2. Intento FMP (Fallback)
+    try:
+        api_key = st.secrets["fmp"]["api_key"]
+        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
+        data = requests.get(url, timeout=2).json()
+        if data and len(data) > 0:
+            isin = data[0].get('isin')
+            if isin and len(isin) > 5:
+                return isin
+    except: pass
+
+    return "" # No encontrado
 
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
@@ -261,7 +277,7 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
 
     pdf.set_font("Arial", 'B', 9)
     cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
+    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
 
     pdf.set_font("Arial", '', 9)
@@ -446,7 +462,7 @@ if not df.empty:
             valor_transmision_neto_total = dinero_eur - comision_eur
             precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
 
-            # --- CAPTURA ISIN ---
+            # --- CAPTURA ISIN (DUAL) ---
             isin_actual = ""
             if es_año_fiscal:
                 if tick not in isin_cache_local:
@@ -711,7 +727,6 @@ else:
             if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
                 p_now = 0
                 if i['acciones'] > 0.001:
-                    # FIX: NOMBRE DE FUNCIÓN CORREGIDO (V32.24)
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
@@ -724,7 +739,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.24 ---
+    # --- DISEÑO HEADER PRO V32.25 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
