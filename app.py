@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.19 (Lotes FIFO)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.20 (Fiscal + Móvil)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -154,6 +154,7 @@ def guardar_en_airtable(record):
         st.rerun()
     except Exception as e: st.error(f"Error guardando: {e}")
 
+# --- GENERADORES PDF ---
 def generar_pdf_historial(dataframe, titulo):
     class PDF(FPDF):
         def header(self):
@@ -182,6 +183,90 @@ def generar_pdf_historial(dataframe, titulo):
             valor = str(row[col_key]).replace("€", "EUR").encode('latin-1', 'replace').decode('latin-1')
             pdf.cell(ancho, 10, valor, 1, 0, 'C')
         pdf.ln()
+    return pdf.output(dest='S').encode('latin-1')
+
+def generar_informe_fiscal_completo(datos_fiscales, año):
+    class PDF_Fiscal(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 14)
+            self.cell(0, 10, f"Informe Fiscal - Ejercicio {año}", 0, 1, 'C')
+            self.set_font('Arial', 'I', 10)
+            self.cell(0, 5, f"Generado el {datetime.now().strftime('%d/%m/%Y')}", 0, 1, 'C')
+            self.ln(10)
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.cell(0, 10, f'Pág {self.page_no()}', 0, 0, 'C')
+
+    pdf = PDF_Fiscal(orientation='L')
+    pdf.add_page()
+    
+    # 1. GANANCIAS Y PÉRDIDAS
+    pdf.set_font("Arial", 'B', 12)
+    pdf.set_fill_color(200, 200, 200)
+    pdf.cell(0, 10, "1. Ganancias y Pérdidas Patrimoniales (Acciones)", 1, 1, 'L', 1)
+    pdf.ln(2)
+
+    pdf.set_font("Arial", 'B', 9)
+    cols = [("Ticker", 20), ("F. Venta", 25), ("F. Compra", 25), ("Cant.", 20), ("V. Transmisión", 35), ("V. Adquisición", 35), ("Rendimiento", 35)]
+    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
+    pdf.ln()
+    
+    pdf.set_font("Arial", '', 9)
+    total_ganancias = 0.0
+    ops_acciones = [d for d in datos_fiscales if d['Tipo'] == "Ganancia/Pérdida"]
+    
+    for op in ops_acciones:
+        rend = op['Rendimiento']
+        total_ganancias += rend
+        pdf.cell(20, 8, str(op['Ticker']), 1, 0, 'C')
+        pdf.cell(25, 8, str(op['Fecha Venta']), 1, 0, 'C')
+        pdf.cell(25, 8, str(op['Fecha Compra']), 1, 0, 'C')
+        pdf.cell(20, 8, f"{op['Cantidad']:.2f}", 1, 0, 'C')
+        pdf.cell(35, 8, f"{op['V. Transmisión']:.2f} EUR", 1, 0, 'R')
+        pdf.cell(35, 8, f"{op['V. Adquisición']:.2f} EUR", 1, 0, 'R')
+        pdf.set_text_color(0, 150, 0) if rend >= 0 else pdf.set_text_color(200, 0, 0)
+        pdf.cell(35, 8, f"{rend:.2f} EUR", 1, 0, 'R')
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln()
+
+    # Total 1
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(160, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
+    pdf.set_text_color(0, 150, 0) if total_ganancias >= 0 else pdf.set_text_color(200, 0, 0)
+    pdf.cell(35, 10, f"{total_ganancias:,.2f} EUR", 0, 1, 'R')
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(5)
+
+    # 2. DIVIDENDOS
+    pdf.set_font("Arial", 'B', 12)
+    pdf.set_fill_color(200, 200, 200)
+    pdf.cell(0, 10, "2. Rendimientos del Capital Mobiliario (Dividendos)", 1, 1, 'L', 1)
+    pdf.ln(2)
+
+    pdf.set_font("Arial", 'B', 9)
+    cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
+    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
+    pdf.ln()
+
+    pdf.set_font("Arial", '', 9)
+    total_divs_neto = 0.0
+    ops_divs = [d for d in datos_fiscales if d['Tipo'] == "Dividendo"]
+
+    for op in ops_divs:
+        total_divs_neto += op['Neto']
+        pdf.cell(30, 8, str(op['Ticker']), 1, 0, 'C')
+        pdf.cell(40, 8, str(op['Fecha']), 1, 0, 'C')
+        pdf.cell(40, 8, f"{op['Bruto']:.2f} EUR", 1, 0, 'R')
+        pdf.cell(40, 8, f"{op['Gastos']:.2f} EUR", 1, 0, 'R')
+        pdf.cell(40, 8, f"{op['Neto']:.2f} EUR", 1, 0, 'R')
+        pdf.ln()
+
+    # Total 2
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(150, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
+    pdf.cell(40, 10, f"{total_divs_neto:,.2f} EUR", 0, 1, 'R')
+    
     return pdf.output(dest='S').encode('latin-1')
 
 # --- APP INICIO ---
@@ -278,15 +363,10 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO (LÓGICA FIFO CON DETALLE)
-# ... (Mismo código de imports y configuración al principio) ...
-
 # 3. MOTOR DE CÁLCULO (LÓGICA FIFO + REGISTRO FISCAL V32.20)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
-
-# Nuevo: Lista para almacenar las operaciones fiscales desglosadas
 reporte_fiscal_log = [] 
 
 if not df.empty:
@@ -304,14 +384,13 @@ if not df.empty:
         if precio <= 0: precio = 1
         acciones_op = dinero / precio 
         
-        # Filtro de año solo para visualización, pero el cálculo FIFO recorre todo el histórico
         en_rango_visual = (año_seleccionado == "Todos los años") or (row.get('Año') == int(año_seleccionado))
         es_año_fiscal = (row.get('Año') == int(año_seleccionado)) if año_seleccionado != "Todos los años" else True
 
         delta_p, delta_i = 0.0, 0.0
         
         if en_rango_visual: total_comi += comision_eur
-        delta_p -= comision_eur # La comisión resta beneficio inmediato en el gráfico PnL
+        delta_p -= comision_eur
 
         if tick not in cartera:
             colas_fifo[tick] = [] 
@@ -335,7 +414,6 @@ if not df.empty:
             cartera[tick]['coste_total_eur'] += dinero_eur
             if en_rango_visual: compras_eur += dinero_eur
             
-            # FIFO: Añadir lote con FECHA y COSTE UNITARIO (Incluye comisiones de compra implícitas en el total pagado)
             colas_fifo[tick].append({
                 'fecha': row.get('Fecha_dt'),
                 'fecha_str': row.get('Fecha_str', '').split(' ')[0],
@@ -349,12 +427,6 @@ if not df.empty:
         elif tipo == "Venta":
             acciones_a_vender = acciones_op
             coste_total_venta_fifo = 0.0
-            
-            # Precio de venta neto unitario (descontando comisión de venta para el reporte fiscal)
-            # Valor Transmisión = (Importe Bruto - Comisiones)
-            # Aquí 'dinero_eur' es el importe total de la operación. Asumimos que si metiste "Importe Total",
-            # el usuario puso el valor bruto de las acciones. La comisión se resta aparte.
-            # Para simplificar: Valor Transmisión Unitario Neto = (Dinero Total Operación - Comisión) / Acciones
             valor_transmision_neto_total = dinero_eur - comision_eur
             precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
 
@@ -373,11 +445,8 @@ if not df.empty:
                     lote['acciones_restantes'] -= cantidad_consumida
                     acciones_a_vender = 0
                 
-                # --- REGISTRO FISCAL (Si coincide con el año seleccionado) ---
                 if es_año_fiscal:
-                    # Valor Adquisición = (Precio Compra + Gastos Compra) * Cantidad
                     v_adquisicion = cantidad_consumida * lote['coste_por_accion_eur']
-                    # Valor Transmisión = (Precio Venta - Gastos Venta) * Cantidad
                     v_transmision = cantidad_consumida * precio_venta_neto_unitario
                     rendimiento = v_transmision - v_adquisicion
 
@@ -412,7 +481,6 @@ if not df.empty:
 
         elif tipo == "Dividendo":
             delta_p += dinero_eur
-            # Dividendo Neto = Importe - Comisión (si la hubiera)
             div_neto = dinero_eur - comision_eur
             if en_rango_visual: total_div += dinero_eur
             
@@ -428,92 +496,178 @@ if not df.empty:
         
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
-# --- FUNCIÓN GENERADOR PDF FISCAL ---
-def generar_informe_fiscal_completo(datos_fiscales, año):
-    class PDF_Fiscal(FPDF):
-        def header(self):
-            self.set_font('Arial', 'B', 14)
-            self.cell(0, 10, f"Informe Fiscal - Ejercicio {año}", 0, 1, 'C')
-            self.set_font('Arial', 'I', 10)
-            self.cell(0, 5, f"Generado el {datetime.now().strftime('%d/%m/%Y')}", 0, 1, 'C')
-            self.ln(10)
-        def footer(self):
-            self.set_y(-15)
-            self.set_font('Arial', 'I', 8)
-            self.cell(0, 10, f'Pág {self.page_no()}', 0, 0, 'C')
+# ==========================================
+#        VISTA DETALLE
+# ==========================================
+if st.session_state.ticker_detalle:
+    t = st.session_state.ticker_detalle
+    info = cartera.get(t, {})
+    if st.button("⬅️ Volver", type="secondary"): st.session_state.ticker_detalle = None; st.rerun()
+    st.divider()
+    c1, c2 = st.columns([1, 5])
+    with c1: st.image(get_logo_url(t), width=80)
+    with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    pdf = PDF_Fiscal(orientation='L')
-    pdf.add_page()
+    c_time, c_ind = st.columns([1, 3])
+    label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
+    periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
+    width_map = {"1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
+    inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
+    sma_p = 50
+    if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
+    type_g = st.radio("Estilo", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
+
+    with st.spinner("Cargando..."):
+        nom, now, desc = get_stock_data_fmp(t)
+        if not now: nom, now, desc = get_stock_data_yahoo(t)
+        hist = pd.DataFrame()
+        try:
+            hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
+            hist['Date'] = pd.to_datetime(hist['Date']).dt.date
+            hist['Volume'] = pd.to_numeric(hist['Volume'], errors='coerce').fillna(0)
+        except: pass
+
+    if not hist.empty:
+        if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
+        if "Tendencia" in inds:
+            hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
+            x, y = hist['Ord'].values, hist['Close'].values
+            if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
+        
+        stat_max = hist['Close'].max()
+        stat_min = hist['Close'].min()
+        stat_avg = hist['Close'].mean()
+        last_date = hist['Date'].max()
+        df_price_stats = pd.DataFrame([
+            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
+            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
+            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
+        ])
+        df_price_stats['Date'] = last_date
+
+    m1, m2, m3, m4 = st.columns(4)
+    acc = info.get('acciones', 0)
     
-    # 1. GANANCIAS Y PÉRDIDAS PATRIMONIALES
-    pdf.set_font("Arial", 'B', 12)
-    pdf.set_fill_color(200, 200, 200)
-    pdf.cell(0, 10, "1. Ganancias y Pérdidas Patrimoniales (Acciones)", 1, 1, 'L', 1)
-    pdf.ln(2)
-
-    # Cabeceras Tabla 1
-    pdf.set_font("Arial", 'B', 9)
-    cols = [("Ticker", 20), ("F. Venta", 25), ("F. Compra", 25), ("Cant.", 20), ("V. Transmisión", 35), ("V. Adquisición", 35), ("Rendimiento", 35)]
-    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
-    pdf.ln()
+    valor_mercado_eur, rent = 0.0, 0.0
+    fx_actual = 1.0
+    if now and acc > 0:
+        fx_actual = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
+        valor_mercado_eur = acc * now * fx_actual
+        if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
     
-    pdf.set_font("Arial", '', 9)
-    total_ganancias = 0.0
-    ops_acciones = [d for d in datos_fiscales if d['Tipo'] == "Ganancia/Pérdida"]
-    
-    for op in ops_acciones:
-        rend = op['Rendimiento']
-        total_ganancias += rend
-        pdf.cell(20, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(25, 8, str(op['Fecha Venta']), 1, 0, 'C')
-        pdf.cell(25, 8, str(op['Fecha Compra']), 1, 0, 'C')
-        pdf.cell(20, 8, f"{op['Cantidad']:.2f}", 1, 0, 'C')
-        pdf.cell(35, 8, f"{op['V. Transmisión']:.2f} EUR", 1, 0, 'R')
-        pdf.cell(35, 8, f"{op['V. Adquisición']:.2f} EUR", 1, 0, 'R')
-        pdf.set_text_color(0, 150, 0) if rend >= 0 else pdf.set_text_color(200, 0, 0)
-        pdf.cell(35, 8, f"{rend:.2f} EUR", 1, 0, 'R')
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln()
+    m1.metric("Precio", f"{now:,.2f}" if now else "N/A")
+    m2.metric("Acciones", f"{acc:,.4f}")
+    m3.metric("Valor", f"{valor_mercado_eur:,.2f} €", delta=f"{rent:+.2f}%")
+    m4.metric("Trading (Realizado)", f"{info.get('pnl_cerrado',0):,.2f} €")
 
-    # Total 1
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(160, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
-    pdf.set_text_color(0, 150, 0) if total_ganancias >= 0 else pdf.set_text_color(200, 0, 0)
-    pdf.cell(35, 10, f"{total_ganancias:,.2f} EUR", 0, 1, 'R')
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(5)
+    # --- DESGLOSE FIFO ---
+    lotes = info.get('lotes', [])
+    if lotes and now:
+        st.subheader("📦 Desglose de Lotes Activos (FIFO)")
+        data_lotes = []
+        for l in lotes:
+            cant = l['acciones_restantes']
+            coste_paquete = cant * l['coste_por_accion_eur']
+            valor_paquete = cant * now * fx_actual
+            plusvalia = valor_paquete - coste_paquete
+            rent_lote = (plusvalia / coste_paquete) * 100 if coste_paquete > 0 else 0
+            
+            data_lotes.append({
+                "Fecha Compra": l['fecha_str'],
+                "Acciones": cant,
+                "Precio Orig. (EUR)": l['coste_por_accion_eur'],
+                "Coste Lote": coste_paquete,
+                "Valor Hoy": valor_paquete,
+                "Plusvalía": plusvalia,
+                "% Rent.": rent_lote
+            })
+        
+        df_lotes = pd.DataFrame(data_lotes)
+        if not df_lotes.empty:
+            def estilo_lotes(row):
+                color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' 
+                return [f'background-color: {color}; color: black']*len(row)
 
-    # 2. DIVIDENDOS
-    pdf.set_font("Arial", 'B', 12)
-    pdf.set_fill_color(200, 200, 200)
-    pdf.cell(0, 10, "2. Rendimientos del Capital Mobiliario (Dividendos)", 1, 1, 'L', 1)
-    pdf.ln(2)
+            st.dataframe(
+                df_lotes.style.format({
+                    "Acciones": "{:,.4f}",
+                    "Precio Orig. (EUR)": "{:,.2f} €",
+                    "Coste Lote": "{:,.2f} €",
+                    "Valor Hoy": "{:,.2f} €",
+                    "Plusvalía": "{:,.2f} €",
+                    "% Rent.": "{:+.2f}%"
+                }).apply(estilo_lotes, axis=1), 
+                use_container_width=True, 
+                hide_index=True
+            )
+            st.caption("Nota: 'Precio Orig. (EUR)' incluye comisiones y cambio de divisa histórico.")
 
-    # Cabeceras Tabla 2
-    pdf.set_font("Arial", 'B', 9)
-    cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
-    pdf.ln()
+    st.subheader("📈 Gráfico")
+    if not hist.empty:
+        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
+        base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
+        
+        if type_g == "Línea":
+            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
+        else:
+            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            main = rule + bar
+        
+        tooltips_completos = [
+            alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
+            alt.Tooltip('Close', title='Precio', format=',.2f'),
+            alt.Tooltip('Volume', title='Volumen', format=',')
+        ]
+        
+        points = base.mark_point().encode(
+            y=alt.Y('Close', scale=alt.Scale(zero=False)), 
+            opacity=alt.value(0),
+            tooltip=tooltips_completos
+        ).add_params(hover)
 
-    pdf.set_font("Arial", '', 9)
-    total_divs_neto = 0.0
-    ops_divs = [d for d in datos_fiscales if d['Tipo'] == "Dividendo"]
+        rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
+        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
+        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
+        
+        layers = [main, points, rule_hover, rules_stats, text_stats]
 
-    for op in ops_divs:
-        total_divs_neto += op['Neto']
-        pdf.cell(30, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(40, 8, str(op['Fecha']), 1, 0, 'C')
-        pdf.cell(40, 8, f"{op['Bruto']:.2f} EUR", 1, 0, 'R')
-        pdf.cell(40, 8, f"{op['Gastos']:.2f} EUR", 1, 0, 'R')
-        pdf.cell(40, 8, f"{op['Neto']:.2f} EUR", 1, 0, 'R')
-        pdf.ln()
+        movs_raw = info.get('movimientos', [])
+        if movs_raw:
+            df_m_chart = pd.DataFrame(movs_raw)
+            df_m_chart['Date'] = pd.to_datetime(df_m_chart['Fecha_Raw']).dt.date
+            min_date = hist['Date'].min()
+            df_m_chart = df_m_chart[df_m_chart['Date'] >= min_date]
+            if not df_m_chart.empty:
+                compras = df_m_chart[df_m_chart['Tipo'] == 'Compra']
+                if not compras.empty:
+                    layers.append(alt.Chart(compras).mark_point(shape='circle', size=150, color='#0044FF', filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', format='.2f'), alt.Tooltip('Cantidad', title='Total Invest')]))
+                ventas = df_m_chart[df_m_chart['Tipo'] == 'Venta']
+                if not ventas.empty:
+                    layers.append(alt.Chart(ventas).mark_point(shape='circle', size=150, color='#800020', filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
 
-    # Total 2
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(150, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
-    pdf.cell(40, 10, f"{total_divs_neto:,.2f} EUR", 0, 1, 'R')
-    
-    return pdf.output(dest='S').encode('latin-1')
+        if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
+        if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
+        
+        chart_p = alt.layer(*layers).properties(height=350, width=800)
+        
+        if "Volumen" in inds:
+            vol = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800).add_params(hover)
+            final = alt.vconcat(chart_p, vol).resolve_scale(x='shared')
+        else: final = chart_p
+        
+        st.altair_chart(final, use_container_width=True)
+
+    with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
+    st.subheader("📝 Movimientos Históricos")
+    if info['movimientos']:
+        df_m = pd.DataFrame(info['movimientos'])[['Fecha_str','Tipo','Cantidad','Precio','Moneda','Comision']].rename(columns={'Fecha_str':'Fecha', 'Cantidad':'Total'})
+        df_m['Acciones'] = df_m.apply(lambda x: x['Total'] / x['Precio'] if x['Tipo'] != 'Dividendo' and x['Precio'] > 0 else 0, axis=1)
+        df_m = df_m[['Fecha', 'Tipo', 'Acciones', 'Precio', 'Total', 'Moneda', 'Comision']]
+        def color_rows(r): 
+            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
+            return [f'color: {c}']*len(r)
+        st.dataframe(df_m.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
 
 # ==========================================
 #        DASHBOARD (PORTADA)
