@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.21 (Visual Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.23 (Pro ISIN)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -115,6 +115,20 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
         return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
 
+# --- NUEVA FUNCIÓN: CAPTURA DE ISIN CON CACHÉ ---
+@st.cache_data(show_spinner=False)
+def get_ticker_isin(ticker):
+    """Intenta obtener el ISIN de Yahoo Finance. Cacheado para velocidad."""
+    try:
+        # A veces Yahoo requiere el sufijo para ser preciso, pero probamos directo primero
+        t = yf.Ticker(ticker)
+        isin = t.isin
+        if isin and isin != '-':
+            return isin
+        return ""
+    except:
+        return ""
+
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
 
@@ -208,31 +222,33 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
     pdf.ln(2)
 
     pdf.set_font("Arial", 'B', 9)
-    cols = [("Ticker", 20), ("F. Venta", 25), ("F. Compra", 25), ("Cant.", 20), ("V. Transmisión", 35), ("V. Adquisición", 35), ("Rendimiento", 35)]
+    # AJUSTE DE COLUMNAS PARA INCLUIR ISIN
+    cols = [("Ticker", 18), ("ISIN", 32), ("F. Venta", 23), ("F. Compra", 23), ("Cant.", 18), ("V. Transm.", 30), ("V. Adquis.", 30), ("Rendimiento", 30)]
     for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
     
-    pdf.set_font("Arial", '', 9)
+    pdf.set_font("Arial", '', 8) # Letra un poco más pequeña para que quepa todo
     total_ganancias = 0.0
     ops_acciones = [d for d in datos_fiscales if d['Tipo'] == "Ganancia/Pérdida"]
     
     for op in ops_acciones:
         rend = op['Rendimiento']
         total_ganancias += rend
-        pdf.cell(20, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(25, 8, str(op['Fecha Venta']), 1, 0, 'C')
-        pdf.cell(25, 8, str(op['Fecha Compra']), 1, 0, 'C')
-        pdf.cell(20, 8, f"{op['Cantidad']:.2f}", 1, 0, 'C')
-        pdf.cell(35, 8, f"{op['V. Transmisión']:.2f} EUR", 1, 0, 'R')
-        pdf.cell(35, 8, f"{op['V. Adquisición']:.2f} EUR", 1, 0, 'R')
+        pdf.cell(18, 8, str(op['Ticker']), 1, 0, 'C')
+        pdf.cell(32, 8, str(op.get('ISIN', '')), 1, 0, 'C') # Nueva celda ISIN
+        pdf.cell(23, 8, str(op['Fecha Venta']), 1, 0, 'C')
+        pdf.cell(23, 8, str(op['Fecha Compra']), 1, 0, 'C')
+        pdf.cell(18, 8, f"{op['Cantidad']:.2f}", 1, 0, 'C')
+        pdf.cell(30, 8, f"{op['V. Transmisión']:.2f}", 1, 0, 'R')
+        pdf.cell(30, 8, f"{op['V. Adquisición']:.2f}", 1, 0, 'R')
         pdf.set_text_color(0, 150, 0) if rend >= 0 else pdf.set_text_color(200, 0, 0)
-        pdf.cell(35, 8, f"{rend:.2f} EUR", 1, 0, 'R')
+        pdf.cell(30, 8, f"{rend:.2f}", 1, 0, 'R')
         pdf.set_text_color(0, 0, 0)
         pdf.ln()
 
     # Total 1
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(160, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
+    pdf.cell(165, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
     pdf.set_text_color(0, 150, 0) if total_ganancias >= 0 else pdf.set_text_color(200, 0, 0)
     pdf.cell(35, 10, f"{total_ganancias:,.2f} EUR", 0, 1, 'R')
     pdf.set_text_color(0, 0, 0)
@@ -363,7 +379,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + REGISTRO FISCAL)
+# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + ISIN + REGISTRO FISCAL)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
@@ -371,6 +387,8 @@ reporte_fiscal_log = []
 
 if not df.empty:
     colas_fifo = {}
+    # Caché local para no llamar a YF mil veces por el mismo ticker
+    isin_cache_local = {}
 
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
         tipo, tick = row.get('Tipo'), str(row.get('Ticker')).strip()
@@ -430,6 +448,13 @@ if not df.empty:
             valor_transmision_neto_total = dinero_eur - comision_eur
             precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
 
+            # --- CAPTURA ISIN AGRESIVA (Solo si necesitamos el reporte) ---
+            isin_actual = ""
+            if es_año_fiscal:
+                if tick not in isin_cache_local:
+                    isin_cache_local[tick] = get_ticker_isin(tick)
+                isin_actual = isin_cache_local[tick]
+
             while acciones_a_vender > 0 and colas_fifo[tick]:
                 lote = colas_fifo[tick][0]
                 cantidad_consumida = 0
@@ -453,6 +478,7 @@ if not df.empty:
                     reporte_fiscal_log.append({
                         "Tipo": "Ganancia/Pérdida",
                         "Ticker": tick,
+                        "ISIN": isin_actual, # Nuevo campo
                         "Fecha Venta": row.get('Fecha_str', '').split(' ')[0],
                         "Fecha Compra": lote['fecha_str'],
                         "Cantidad": cantidad_consumida,
@@ -628,11 +654,12 @@ if st.session_state.ticker_detalle:
 
         rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
         
-        # --- FIX: Añadido legend=None para evitar iconos rotos ---
-        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None, legend=None))
-        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None, legend=None))
-        
-        layers = [main, points, rule_hover, rules_stats, text_stats]
+        stats_layers = []
+        for _, r in df_price_stats.iterrows():
+            stats_layers.append(alt.Chart(pd.DataFrame({'y':[r['Val']]})).mark_rule(color=r['Color'], strokeDash=[4,4]).encode(y='y'))
+            stats_layers.append(alt.Chart(pd.DataFrame({'x':[r['Date']], 'y':[r['Val']], 't':[r['Label']]})).mark_text(color=r['Color'], align='left', dx=5).encode(x='x', y='y', text='t'))
+
+        layers = [main, points, rule_hover] + stats_layers
 
         movs_raw = info.get('movimientos', [])
         if movs_raw:
@@ -686,157 +713,4 @@ else:
             if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
                 p_now = 0
                 if i['acciones'] > 0.001:
-                    _, p_now, _ = get_stock_data_fmp(t)
-                    if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
-                val = i['acciones'] * p_now if p_now else 0
-                
-                valor_total_cartera += val
-                
-                r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
-                tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
-
-    neto = pnl_cerrado + total_div - total_comi
-    roi = (neto/compras_eur)*100 if compras_eur>0 else 0
-
-    # --- DISEÑO HEADER PRO V32.21 ---
-    c_hdr_1, c_hdr_2 = st.columns([3, 1])
-    with c_hdr_1:
-        st.title("💼 Cartera") 
-    with c_hdr_2:
-        st.markdown(f"""
-            <div style="text-align: right;">
-                <span style="font-size: 1.1rem; color: gray;">Valor Cartera</span><br>
-                <span style="font-size: 2.2rem; font-weight: bold;">{valor_total_cartera:,.2f} €</span>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-
-    # --- MÉTRICAS SECUNDARIAS ---
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
-    m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
-    m3.metric("Dividendos", f"{total_div:,.2f} €")
-    m4.metric("Comisiones", f"-{total_comi:,.2f} €")
-
-    # --- GRÁFICO ROI ---
-    if roi_log:
-        with st.expander("📈 Ver Evolución ROI", expanded=False):
-            df_r = pd.DataFrame(roi_log)
-            df_r['Fecha'] = pd.to_datetime(df_r['Fecha'])
-            if año_seleccionado != "Todos los años": df_r = df_r[df_r['Year'] == int(año_seleccionado)]
-            if not df_r.empty:
-                df_r.set_index('Fecha', inplace=True)
-                df_w = df_r.resample('W').sum().fillna(0)
-                df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
-                df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-                df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
-                df_w = df_w.reset_index()
-                
-                ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
-                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
-                if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-                elif ymin < 0 < ymax:
-                    off = abs(ymax)/(ymax-ymin)
-                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
-
-                base = alt.Chart(df_w).encode(x='Fecha:T')
-                area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
-                rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
-                last = df_w['Fecha'].max()
-                df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
-                df_s['D'] = last
-                
-                # --- FIX: Añadido legend=None ---
-                lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None, legend=None))
-                lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None, legend=None))
-                
-                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
-                pts = base.mark_point(opacity=0).add_params(hover)
-                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-                st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
-
-    st.divider()
-    
-    # === SELECCIÓN DE VISTA ===
-    vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
-    
-    # === DESCARGA INFORME FISCAL ===
-    if año_seleccionado != "Todos los años" and reporte_fiscal_log:
-        st.sidebar.divider()
-        st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
-        try:
-            pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-            st.sidebar.download_button(
-                f"📄 Informe Renta {año_seleccionado}", 
-                pdf_fiscal, 
-                f"Informe_Fiscal_{año_seleccionado}.pdf", 
-                "application/pdf",
-                use_container_width=True
-            )
-        except Exception as e:
-            st.sidebar.error(f"Error generando PDF: {e}")
-    elif año_seleccionado == "Todos los años":
-        st.sidebar.divider()
-        st.sidebar.caption("⚠️ Selecciona un año concreto arriba para descargar el Informe Fiscal.")
-
-    if tabla:
-        st.subheader("📊 Mi Portfolio")
-        
-        if vista_movil:
-            st.info("💡 Vista optimizada para pantallas pequeñas.")
-            for row in tabla:
-                with st.container(border=True):
-                    c_top_1, c_top_2 = st.columns([1, 4])
-                    with c_top_1: st.image(row["Logo"], width=50)
-                    with c_top_2: 
-                        st.write(f"**{row['Ticker']}**")
-                        st.caption(row["Empresa"][:30] + "..." if len(row["Empresa"])>30 else row["Empresa"])
-                    st.divider()
-                    gm1, gm2 = st.columns(2)
-                    gm3, gm4 = st.columns(2)
-                    gm1.metric("Valor Actual", fmt_dinamico(row['Valor'], '€'))
-                    gm2.metric("Rent. Latente", fmt_dinamico(row['Latente']*100, '%'), delta=f"{row['Latente']*100:.2f}%")
-                    gm3.metric("Invertido", fmt_dinamico(row['Invertido'], '€'))
-                    gm4.metric("Trading", fmt_dinamico(row['Trading'], '€'), delta_color="normal" if row['Trading']>=0 else "inverse")
-                    if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
-                        st.session_state.ticker_detalle = row['Ticker']
-                        st.rerun()
-
-        else:
-            st.markdown("---")
-            c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-            titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
-            for i, title in enumerate(titles): 
-                c[i].markdown(f"**{title}**")
-            st.markdown("---")
-            for row in tabla:
-                c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-                with c[0]: st.image(row["Logo"], width=30)
-                with c[1]: st.write(f"**{row['Ticker']}**")
-                with c[2]: st.caption(row["Empresa"])
-                with c[3]: st.write(fmt_dinamico(row['Acciones']))
-                with c[4]: st.write(fmt_dinamico(row['PMC'], '€'))
-                with c[5]: st.write(fmt_dinamico(row['Invertido'], '€'))
-                with c[6]: st.write(f"**{fmt_dinamico(row['Valor'], '€')}**") 
-                color_lat = "green" if row['Latente'] >= 0 else "red"
-                with c[7]: st.markdown(f":{color_lat}[{fmt_dinamico(row['Latente']*100, '%')}]")
-                color_trad = "green" if row['Trading'] >= 0 else "red"
-                with c[8]: st.markdown(f":{color_trad}[{fmt_dinamico(row['Trading'], '€')}]")
-                with c[9]:
-                    if st.button("🔍", key=f"btn_{row['Ticker']}"): 
-                        st.session_state.ticker_detalle = row['Ticker']
-                        st.rerun()
-                st.divider()
-    
-    st.divider()
-    st.subheader("📜 Historial")
-    if not df.empty:
-        c1, c2 = st.columns(2)
-        c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
-        try: c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
-        except: pass
-        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']
-        if not df.empty:
-            st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
+                    _, p_now, _ = get_stock_
