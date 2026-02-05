@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.27 (Fiscal Form)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.28 (DNI Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -73,7 +73,6 @@ def login_system():
                 if user_in in users_db and users_db[user_in].get('Password') == pass_in:
                     st.session_state.current_user = user_in
                     st.session_state.user_role = users_db[user_in].get('Rol', 'user')
-                    # Intentamos cargar el nombre si existe, sino usamos el usuario
                     st.session_state.user_full_name = users_db[user_in].get('Nombre', user_in)
                     st.rerun()
                 else: st.error("Incorrecto")
@@ -215,11 +214,11 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, nif_ti
             self.set_font('Arial', 'B', 16)
             self.cell(0, 10, f"Informe Fiscal - Ejercicio {año}", 0, 1, 'C')
             
-            # Datos del Titular
+            # Datos del Titular (Usamos las variables inyectadas en la instancia)
             self.set_font('Arial', '', 11)
-            # Forzamos que sean strings para evitar errores
-            n_str = str(nombre_titular).strip() if nombre_titular else "________________"
-            d_str = str(nif_titular).strip() if nif_titular else "________________"
+            # Recuperamos los datos que guardamos en la instancia 'self'
+            n_str = getattr(self, 'custom_nombre', '________________')
+            d_str = getattr(self, 'custom_nif', '________________')
             
             self.cell(0, 6, f"Titular: {n_str}   |   NIF/DNI: {d_str}", 0, 1, 'C')
             self.set_font('Arial', 'I', 8)
@@ -233,6 +232,10 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, nif_ti
             self.cell(0, 10, f'Pág {self.page_no()}', 0, 0, 'C')
 
     pdf = PDF_Fiscal(orientation='L')
+    # INYECCIÓN EXPLÍCITA DE DATOS EN LA INSTANCIA PDF
+    pdf.custom_nombre = nombre_titular if nombre_titular else "________________"
+    pdf.custom_nif = nif_titular if nif_titular else "________________"
+    
     pdf.add_page()
     
     # 1. GANANCIAS Y PÉRDIDAS
@@ -413,7 +416,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + ISIN + REGISTRO FISCAL)
+# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + ISIN + EMPRESA + REGISTRO FISCAL)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
@@ -760,7 +763,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.27 ---
+    # --- DISEÑO HEADER PRO V32.28 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -833,26 +836,29 @@ else:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
         
-        # INPUTS MANUALES PARA EL PDF
         nombre_titular_manual = st.sidebar.text_input("Nombre Titular:", value=st.session_state.user_full_name)
         nif_titular_manual = st.sidebar.text_input("NIF/DNI:", placeholder="12345678X")
         
-        try:
-            pdf_fiscal = generar_informe_fiscal_completo(
-                reporte_fiscal_log, 
-                año_seleccionado, 
-                nombre_titular_manual, 
-                nif_titular_manual
-            )
-            st.sidebar.download_button(
-                f"📄 Informe Renta {año_seleccionado}", 
-                pdf_fiscal, 
-                f"Informe_Fiscal_{año_seleccionado}.pdf", 
-                "application/pdf",
-                use_container_width=True
-            )
-        except Exception as e:
-            st.sidebar.error(f"Error generando PDF: {e}")
+        # Botón con validación visual (Warning si faltan datos)
+        if not nombre_titular_manual or not nif_titular_manual:
+            st.sidebar.warning("⚠️ Rellena Nombre y NIF para descargar.")
+        else:
+            try:
+                pdf_fiscal = generar_informe_fiscal_completo(
+                    reporte_fiscal_log, 
+                    año_seleccionado, 
+                    nombre_titular_manual, 
+                    nif_titular_manual
+                )
+                st.sidebar.download_button(
+                    f"📄 Descargar Informe Renta {año_seleccionado}", 
+                    pdf_fiscal, 
+                    f"Informe_Fiscal_{año_seleccionado}.pdf", 
+                    "application/pdf",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.sidebar.error(f"Error generando PDF: {e}")
     elif año_seleccionado == "Todos los años":
         st.sidebar.divider()
         st.sidebar.caption("⚠️ Selecciona un año concreto arriba para descargar el Informe Fiscal.")
