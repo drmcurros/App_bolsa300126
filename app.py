@@ -554,7 +554,7 @@ if st.session_state.ticker_detalle:
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
-    # --- CÁLCULO PREVIO DE DATOS PARA EL ENCABEZADO ---
+    # --- CÁLCULO PREVIO DE DATOS ---
     tabla = []
     valor_total_cartera = 0.0
     
@@ -579,10 +579,8 @@ else:
 
     # --- DISEÑO HEADER PRO V32.19 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
-    
     with c_hdr_1:
         st.title("💼 Cartera") 
-        
     with c_hdr_2:
         st.markdown(f"""
             <div style="text-align: right;">
@@ -593,72 +591,110 @@ else:
     
     st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS (4 COLUMNAS) ---
+    # --- MÉTRICAS SECUNDARIAS ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", f"{neto:,.2f} €", f"{roi:+.2f}%")
-    m2.metric("Trading (Realizado)", f"{pnl_cerrado:,.2f} €")
+    m2.metric("Trading", f"{pnl_cerrado:,.2f} €")
     m3.metric("Dividendos", f"{total_div:,.2f} €")
     m4.metric("Comisiones", f"-{total_comi:,.2f} €")
 
+    # --- GRÁFICO ROI (Solo si hay datos) ---
     if roi_log:
-        df_r = pd.DataFrame(roi_log)
-        df_r['Fecha'] = pd.to_datetime(df_r['Fecha'])
-        if año_seleccionado != "Todos los años": df_r = df_r[df_r['Year'] == int(año_seleccionado)]
-        if not df_r.empty:
-            df_r.set_index('Fecha', inplace=True)
-            df_w = df_r.resample('W').sum().fillna(0)
-            df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
-            df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-            df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
-            df_w = df_w.reset_index()
-            
-            ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
-            stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
-            if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-            elif ymin < 0 < ymax:
-                off = abs(ymax)/(ymax-ymin)
-                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
+        with st.expander("📈 Ver Evolución ROI", expanded=False):
+            df_r = pd.DataFrame(roi_log)
+            df_r['Fecha'] = pd.to_datetime(df_r['Fecha'])
+            if año_seleccionado != "Todos los años": df_r = df_r[df_r['Year'] == int(año_seleccionado)]
+            if not df_r.empty:
+                df_r.set_index('Fecha', inplace=True)
+                df_w = df_r.resample('W').sum().fillna(0)
+                df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
+                df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
+                df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
+                df_w = df_w.reset_index()
+                
+                ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
+                stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
+                if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
+                elif ymin < 0 < ymax:
+                    off = abs(ymax)/(ymax-ymin)
+                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
 
-            base = alt.Chart(df_w).encode(x='Fecha:T')
-            area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
-            rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-            s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
-            last = df_w['Fecha'].max()
-            df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
-            df_s['D'] = last
-            lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None))
-            lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None))
-            hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
-            pts = base.mark_point(opacity=0).add_params(hover)
-            crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-            st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
+                base = alt.Chart(df_w).encode(x='Fecha:T')
+                area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
+                rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
+                st.altair_chart((area + rule).interactive(), use_container_width=True)
 
     st.divider()
     
+    # === SELECCIÓN DE VISTA (MÓVIL vs PC) ===
+    # Ponemos el toggle en la sidebar para no ensuciar la interfaz principal
+    vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
+
     if tabla:
-        st.subheader("📊 Cartera Detallada")
-        st.markdown("---")
-        c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-        tooltips = ["Logo oficial", "Símbolo bursátil", "Nombre Cía.", "Acciones en cartera", "Precio Medio Compra (Remanente)", "Coste total invertido", "Valor actual mercado", "Rentabilidad Viva (%)", "Bº Cerrado (Realizado)", "Ver Detalle"]
-        titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
-        for i, title in enumerate(titles): c[i].markdown(f'<div title="{tooltips[i]}" style="cursor: help; text-decoration: underline dotted; font-weight: bold;">{title}</div>', unsafe_allow_html=True)
-        st.markdown("---")
-        for row in tabla:
+        st.subheader("📊 Mi Portfolio")
+        
+        # --- OPCIÓN A: VISTA MÓVIL (TARJETAS) ---
+        if vista_movil:
+            st.info("💡 Vista optimizada para pantallas pequeñas.")
+            for row in tabla:
+                # Contenedor con borde para cada acción (Tarjeta)
+                with st.container(border=True):
+                    # Cabecera de la tarjeta: Logo y Nombre
+                    c_top_1, c_top_2 = st.columns([1, 4])
+                    with c_top_1: st.image(row["Logo"], width=50)
+                    with c_top_2: 
+                        st.write(f"**{row['Ticker']}**")
+                        st.caption(row["Empresa"][:30] + "..." if len(row["Empresa"])>30 else row["Empresa"])
+                    
+                    st.divider()
+                    
+                    # Métricas clave en rejilla 2x2
+                    gm1, gm2 = st.columns(2)
+                    gm3, gm4 = st.columns(2)
+                    
+                    gm1.metric("Valor Actual", fmt_dinamico(row['Valor'], '€'))
+                    
+                    color_lat = "normal" if row['Latente'] == 0 else ("inverse" if row['Latente'] < 0 else "normal") # Style hint
+                    delta_color = "off"
+                    gm2.metric("Rent. Latente", fmt_dinamico(row['Latente']*100, '%'), delta=f"{row['Latente']*100:.2f}%")
+                    
+                    gm3.metric("Invertido", fmt_dinamico(row['Invertido'], '€'))
+                    gm4.metric("Trading (Cerrado)", fmt_dinamico(row['Trading'], '€'), delta_color="normal" if row['Trading']>=0 else "inverse")
+                    
+                    # Botón de acción grande
+                    if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
+                        st.session_state.ticker_detalle = row['Ticker']
+                        st.rerun()
+
+        # --- OPCIÓN B: VISTA ESCRITORIO (TABLA CLÁSICA) ---
+        else:
+            # Encabezados
+            st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
-            with c[0]: st.image(row["Logo"], width=30)
-            with c[1]: st.write(f"**{row['Ticker']}**")
-            with c[2]: st.caption(row["Empresa"])
-            with c[3]: st.write(fmt_dinamico(row['Acciones']))
-            with c[4]: st.write(fmt_dinamico(row['PMC'], '€'))
-            with c[5]: st.write(fmt_dinamico(row['Invertido'], '€'))
-            with c[6]: st.write(f"**{fmt_dinamico(row['Valor'], '€')}**") 
-            color_lat = "green" if row['Latente'] >= 0 else "red"
-            with c[7]: st.markdown(f":{color_lat}[{fmt_dinamico(row['Latente']*100, '%')}]")
-            color_trad = "green" if row['Trading'] >= 0 else "red"
-            with c[8]: st.markdown(f":{color_trad}[{fmt_dinamico(row['Trading'], '€')}]")
-            with c[9]:
-                if st.button("🔍", key=f"btn_{row['Ticker']}"): st.session_state.ticker_detalle = row['Ticker']; st.rerun()
-            st.divider()
+            titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
+            for i, title in enumerate(titles): 
+                c[i].markdown(f"**{title}**")
+            st.markdown("---")
+            
+            # Filas
+            for row in tabla:
+                c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
+                with c[0]: st.image(row["Logo"], width=30)
+                with c[1]: st.write(f"**{row['Ticker']}**")
+                with c[2]: st.caption(row["Empresa"])
+                with c[3]: st.write(fmt_dinamico(row['Acciones']))
+                with c[4]: st.write(fmt_dinamico(row['PMC'], '€'))
+                with c[5]: st.write(fmt_dinamico(row['Invertido'], '€'))
+                with c[6]: st.write(f"**{fmt_dinamico(row['Valor'], '€')}**") 
+                color_lat = "green" if row['Latente'] >= 0 else "red"
+                with c[7]: st.markdown(f":{color_lat}[{fmt_dinamico(row['Latente']*100, '%')}]")
+                color_trad = "green" if row['Trading'] >= 0 else "red"
+                with c[8]: st.markdown(f":{color_trad}[{fmt_dinamico(row['Trading'], '€')}]")
+                with c[9]:
+                    if st.button("🔍", key=f"btn_{row['Ticker']}"): 
+                        st.session_state.ticker_detalle = row['Ticker']
+                        st.rerun()
+                st.divider()
     
     st.divider()
     st.subheader("📜 Historial")
@@ -667,9 +703,7 @@ else:
         c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: pass
-        cols_deseadas = ['Fecha_str', 'Ticker', 'Descripcion', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Usuario']
-        cols_final = [c for c in cols_deseadas if c in df.columns]
-        df_display = df[cols_final].copy()
-        df_display = df_display.rename(columns={'Fecha_str': 'Fecha', 'Descripcion': 'Empresa', 'Comision': 'Comisión'})
-        def color_rows(r): return ['']*len(r)
-        st.dataframe(df_display.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+        # Tabla simple para el historial
+        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']
+        if not df.empty:
+            st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
