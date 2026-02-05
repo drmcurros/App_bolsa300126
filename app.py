@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.25 (Dual ISIN)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26 (Informe Formal)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -28,6 +28,7 @@ if "reset_seed" not in st.session_state: st.session_state.reset_seed = 0
 if "ticker_detalle" not in st.session_state: st.session_state.ticker_detalle = None
 if "current_user" not in st.session_state: st.session_state.current_user = None
 if "user_role" not in st.session_state: st.session_state.user_role = "user"
+if "user_full_name" not in st.session_state: st.session_state.user_full_name = ""
 
 # --- CONEXIÓN AIRTABLE ---
 try:
@@ -72,13 +73,15 @@ def login_system():
                 if user_in in users_db and users_db[user_in].get('Password') == pass_in:
                     st.session_state.current_user = user_in
                     st.session_state.user_role = users_db[user_in].get('Rol', 'user')
+                    # Guardamos el nombre real del usuario para el informe
+                    st.session_state.user_full_name = users_db[user_in].get('Nombre', user_in)
                     st.rerun()
                 else: st.error("Incorrecto")
     with tab2:
         with st.form("register_form"):
             new_user = st.text_input("Nuevo Usuario")
             new_pass = st.text_input("Nueva Contraseña", type="password")
-            new_name = st.text_input("Tu Nombre")
+            new_name = st.text_input("Tu Nombre Completo")
             code_in = st.text_input("Código de Invitación", value=invite_code_url)
             if st.form_submit_button("Crear Cuenta"):
                 if code_in == st.secrets["general"]["invite_code"]:
@@ -118,20 +121,12 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
 # --- CAPTURA DE ISIN DOBLE (Yahoo + FMP) ---
 @st.cache_data(show_spinner=False)
 def get_ticker_isin(ticker):
-    """
-    Intenta obtener el ISIN. 
-    1. Primero consulta Yahoo Finance (Rápido).
-    2. Si falla, consulta Financial Modeling Prep (Más fiable).
-    """
-    # 1. Intento Yahoo
     try:
         t = yf.Ticker(ticker)
         isin = t.isin
         if isin and isin != '-' and len(isin) > 5:
             return isin
     except: pass
-
-    # 2. Intento FMP (Fallback)
     try:
         api_key = st.secrets["fmp"]["api_key"]
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
@@ -141,8 +136,7 @@ def get_ticker_isin(ticker):
             if isin and len(isin) > 5:
                 return isin
     except: pass
-
-    return "" # No encontrado
+    return ""
 
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
@@ -214,14 +208,24 @@ def generar_pdf_historial(dataframe, titulo):
         pdf.ln()
     return pdf.output(dest='S').encode('latin-1')
 
-def generar_informe_fiscal_completo(datos_fiscales, año):
+def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, nif_titular):
     class PDF_Fiscal(FPDF):
         def header(self):
-            self.set_font('Arial', 'B', 14)
+            # Título Principal
+            self.set_font('Arial', 'B', 16)
             self.cell(0, 10, f"Informe Fiscal - Ejercicio {año}", 0, 1, 'C')
-            self.set_font('Arial', 'I', 10)
-            self.cell(0, 5, f"Generado el {datetime.now().strftime('%d/%m/%Y')}", 0, 1, 'C')
+            
+            # Datos del Titular (Formalidad)
+            self.set_font('Arial', '', 10)
+            datos_titular = f"Titular: {nombre_titular}"
+            if nif_titular:
+                datos_titular += f"  |  NIF/DNI: {nif_titular}"
+            
+            self.cell(0, 6, datos_titular, 0, 1, 'L')
+            self.cell(0, 6, f"Generado el: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1, 'L')
+            self.line(10, 35, 285, 35) # Línea separadora
             self.ln(10)
+
         def footer(self):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
@@ -232,14 +236,26 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
     
     # 1. GANANCIAS Y PÉRDIDAS
     pdf.set_font("Arial", 'B', 12)
-    pdf.set_fill_color(200, 200, 200)
+    pdf.set_fill_color(240, 240, 240)
     pdf.cell(0, 10, "1. Ganancias y Pérdidas Patrimoniales (Acciones)", 1, 1, 'L', 1)
     pdf.ln(2)
 
-    pdf.set_font("Arial", 'B', 9)
-    # AJUSTE DE COLUMNAS PARA INCLUIR ISIN
-    cols = [("Ticker", 18), ("ISIN", 32), ("F. Venta", 23), ("F. Compra", 23), ("Cant.", 18), ("V. Transm.", 30), ("V. Adquis.", 30), ("Rendimiento", 30)]
-    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
+    pdf.set_font("Arial", 'B', 8) # Fuente un poco más pequeña para que quepa todo
+    # Ajuste de anchos para incluir "Empresa"
+    # Total ancho landscape ~275mm
+    cols = [
+        ("Ticker", 15), 
+        ("Empresa", 45), # NUEVA COLUMNA
+        ("ISIN", 25), 
+        ("F. Venta", 20), 
+        ("F. Compra", 20), 
+        ("Cant.", 15), 
+        ("V. Transm.", 25), 
+        ("V. Adquis.", 25), 
+        ("Rto.", 25)
+    ]
+    
+    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C', 1)
     pdf.ln()
     
     pdf.set_font("Arial", '', 8)
@@ -249,35 +265,41 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
     for op in ops_acciones:
         rend = op['Rendimiento']
         total_ganancias += rend
-        pdf.cell(18, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(32, 8, str(op.get('ISIN', '')), 1, 0, 'C') 
-        pdf.cell(23, 8, str(op['Fecha Venta']), 1, 0, 'C')
-        pdf.cell(23, 8, str(op['Fecha Compra']), 1, 0, 'C')
-        pdf.cell(18, 8, f"{op['Cantidad']:.2f}", 1, 0, 'C')
-        pdf.cell(30, 8, f"{op['V. Transmisión']:.2f}", 1, 0, 'R')
-        pdf.cell(30, 8, f"{op['V. Adquisición']:.2f}", 1, 0, 'R')
+        
+        # Recortar textos largos
+        empresa_short = str(op.get('Empresa', ''))[:23]
+        
+        pdf.cell(15, 8, str(op['Ticker']), 1, 0, 'C')
+        pdf.cell(45, 8, empresa_short, 1, 0, 'L') # Alineada izquierda
+        pdf.cell(25, 8, str(op.get('ISIN', '')), 1, 0, 'C') 
+        pdf.cell(20, 8, str(op['Fecha Venta']), 1, 0, 'C')
+        pdf.cell(20, 8, str(op['Fecha Compra']), 1, 0, 'C')
+        pdf.cell(15, 8, f"{op['Cantidad']:.2f}", 1, 0, 'C')
+        pdf.cell(25, 8, f"{op['V. Transmisión']:.2f}", 1, 0, 'R')
+        pdf.cell(25, 8, f"{op['V. Adquisición']:.2f}", 1, 0, 'R')
+        
         pdf.set_text_color(0, 150, 0) if rend >= 0 else pdf.set_text_color(200, 0, 0)
-        pdf.cell(30, 8, f"{rend:.2f}", 1, 0, 'R')
+        pdf.cell(25, 8, f"{rend:.2f}", 1, 0, 'R')
         pdf.set_text_color(0, 0, 0)
         pdf.ln()
 
     # Total 1
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(165, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
+    pdf.cell(190, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
     pdf.set_text_color(0, 150, 0) if total_ganancias >= 0 else pdf.set_text_color(200, 0, 0)
-    pdf.cell(35, 10, f"{total_ganancias:,.2f} EUR", 0, 1, 'R')
+    pdf.cell(25, 10, f"{total_ganancias:,.2f} EUR", 0, 1, 'R')
     pdf.set_text_color(0, 0, 0)
     pdf.ln(5)
 
     # 2. DIVIDENDOS
     pdf.set_font("Arial", 'B', 12)
-    pdf.set_fill_color(200, 200, 200)
+    pdf.set_fill_color(240, 240, 240)
     pdf.cell(0, 10, "2. Rendimientos del Capital Mobiliario (Dividendos)", 1, 1, 'L', 1)
     pdf.ln(2)
 
     pdf.set_font("Arial", 'B', 9)
-    cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
+    cols_div = [("Ticker", 20), ("Empresa", 50), ("Fecha Cobro", 30), ("Importe Bruto", 30), ("Gastos Ded.", 30), ("Importe Neto", 30)]
+    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C', 1)
     pdf.ln()
 
     pdf.set_font("Arial", '', 9)
@@ -286,17 +308,20 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
 
     for op in ops_divs:
         total_divs_neto += op['Neto']
-        pdf.cell(30, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(40, 8, str(op['Fecha']), 1, 0, 'C')
-        pdf.cell(40, 8, f"{op['Bruto']:.2f} EUR", 1, 0, 'R')
-        pdf.cell(40, 8, f"{op['Gastos']:.2f} EUR", 1, 0, 'R')
-        pdf.cell(40, 8, f"{op['Neto']:.2f} EUR", 1, 0, 'R')
+        empresa_short = str(op.get('Empresa', ''))[:25]
+        
+        pdf.cell(20, 8, str(op['Ticker']), 1, 0, 'C')
+        pdf.cell(50, 8, empresa_short, 1, 0, 'L')
+        pdf.cell(30, 8, str(op['Fecha']), 1, 0, 'C')
+        pdf.cell(30, 8, f"{op['Bruto']:.2f}", 1, 0, 'R')
+        pdf.cell(30, 8, f"{op['Gastos']:.2f}", 1, 0, 'R')
+        pdf.cell(30, 8, f"{op['Neto']:.2f}", 1, 0, 'R')
         pdf.ln()
 
     # Total 2
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(150, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
-    pdf.cell(40, 10, f"{total_divs_neto:,.2f} EUR", 0, 1, 'R')
+    pdf.cell(160, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
+    pdf.cell(30, 10, f"{total_divs_neto:,.2f} EUR", 0, 1, 'R')
     
     return pdf.output(dest='S').encode('latin-1')
 
@@ -394,7 +419,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + ISIN + REGISTRO FISCAL)
+# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + ISIN + EMPRESA + REGISTRO FISCAL)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
@@ -492,6 +517,7 @@ if not df.empty:
                     reporte_fiscal_log.append({
                         "Tipo": "Ganancia/Pérdida",
                         "Ticker": tick,
+                        "Empresa": cartera[tick]['desc'], # AÑADIDO NOMBRE EMPRESA
                         "ISIN": isin_actual, 
                         "Fecha Venta": row.get('Fecha_str', '').split(' ')[0],
                         "Fecha Compra": lote['fecha_str'],
@@ -528,6 +554,7 @@ if not df.empty:
                 reporte_fiscal_log.append({
                     "Tipo": "Dividendo",
                     "Ticker": tick,
+                    "Empresa": cartera[tick]['desc'], # AÑADIDO NOMBRE EMPRESA
                     "Fecha": row.get('Fecha_str', '').split(' ')[0],
                     "Bruto": dinero_eur,
                     "Gastos": comision_eur,
@@ -739,7 +766,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.25 ---
+    # --- DISEÑO HEADER PRO V32.26 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -811,8 +838,15 @@ else:
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
+        nif_input = st.sidebar.text_input("NIF/DNI (Opcional):", placeholder="12345678X")
         try:
-            pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
+            # Ahora pasamos el nombre real del usuario y el NIF
+            pdf_fiscal = generar_informe_fiscal_completo(
+                reporte_fiscal_log, 
+                año_seleccionado, 
+                st.session_state.user_full_name, 
+                nif_input
+            )
             st.sidebar.download_button(
                 f"📄 Informe Renta {año_seleccionado}", 
                 pdf_fiscal, 
