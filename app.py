@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.20 (Fiscal + Móvil)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.21 (Visual Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -363,7 +363,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + REGISTRO FISCAL V32.20)
+# 3. MOTOR DE CÁLCULO (LÓGICA FIFO + REGISTRO FISCAL)
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
@@ -627,8 +627,10 @@ if st.session_state.ticker_detalle:
         ).add_params(hover)
 
         rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
-        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None))
-        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None))
+        
+        # --- FIX: Añadido legend=None para evitar iconos rotos ---
+        rules_stats = alt.Chart(df_price_stats).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(y='Val', color=alt.Color('Color', scale=None, legend=None))
+        text_stats = alt.Chart(df_price_stats).mark_text(align='left', dx=5, dy=-10).encode(x='Date', y='Val', text='Label', color=alt.Color('Color', scale=None, legend=None))
         
         layers = [main, points, rule_hover, rules_stats, text_stats]
 
@@ -696,7 +698,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.20 ---
+    # --- DISEÑO HEADER PRO V32.21 ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -717,7 +719,7 @@ else:
     m3.metric("Dividendos", f"{total_div:,.2f} €")
     m4.metric("Comisiones", f"-{total_comi:,.2f} €")
 
-    # --- GRÁFICO ROI (Solo si hay datos) ---
+    # --- GRÁFICO ROI ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -741,14 +743,26 @@ else:
                 base = alt.Chart(df_w).encode(x='Fecha:T')
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                st.altair_chart((area + rule).interactive(), use_container_width=True)
+                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
+                last = df_w['Fecha'].max()
+                df_s = pd.DataFrame([{'V':s_max,'L':f"Max: {s_max:.1f}%",'C':'green'}, {'V':s_min,'L':f"Min: {s_min:.1f}%",'C':'red'}, {'V':s_avg,'L':f"Med: {s_avg:.1f}%",'C':'blue'}])
+                df_s['D'] = last
+                
+                # --- FIX: Añadido legend=None ---
+                lines = alt.Chart(df_s).mark_rule(strokeDash=[4,4]).encode(y='V', color=alt.Color('C', scale=None, legend=None))
+                lbls = alt.Chart(df_s).mark_text(align='left', dx=5).encode(x='D', y='V', text='L', color=alt.Color('C', scale=None, legend=None))
+                
+                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
+                pts = base.mark_point(opacity=0).add_params(hover)
+                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
+                st.altair_chart((area + rule + lines + lbls + pts + crs), use_container_width=True)
 
     st.divider()
     
-    # === SELECCIÓN DE VISTA (MÓVIL vs PC) ===
+    # === SELECCIÓN DE VISTA ===
     vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
     
-    # === DESCARGA INFORME FISCAL (NUEVO) ===
+    # === DESCARGA INFORME FISCAL ===
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
