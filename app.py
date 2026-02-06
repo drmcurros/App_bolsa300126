@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26c (UI Update)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26d (Chart Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -527,9 +527,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # --- CAMBIOS VISUALES V32.26c: ORDEN Y ESTILO ---
-    
-    # 1. METRICAS GIGANTES ARRIBA (HTML PERSONALIZADO PARA TAMAÑO DE FUENTE)
+    # 1. METRICAS GIGANTES ARRIBA
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -542,7 +540,6 @@ if st.session_state.ticker_detalle:
         valor_mercado_eur = acc * now * fx_actual
         if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
 
-    # CSS para las métricas grandes
     st.markdown("""
     <style>
     .big-metric { text-align: center; border: 1px solid #e6e6e6; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
@@ -559,7 +556,7 @@ if st.session_state.ticker_detalle:
         st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
     with m3:
         color = "green" if rent >= 0 else "red"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color}">{rent*100:+.2f}%</p></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
     with m4:
         trad = info.get('pnl_cerrado', 0)
         color = "green" if trad >= 0 else "red"
@@ -567,22 +564,18 @@ if st.session_state.ticker_detalle:
 
     st.divider()
 
-    # 2. BARRA DE CONTROL UNIFICADA
-    # Columnas: Periodo | Tipo de Gráfico | Indicadores (Checkboxes)
+    # 2. BARRA DE CONTROL
     c_tools = st.columns([2, 1, 3])
     
     with c_tools[0]:
-        # AÑADIDA OPCION "1 Sem"
         label_t = st.select_slider("Periodo", options=["1 Sem", "1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año", label_visibility="collapsed")
         periodo_map = {"1 Sem": "5d", "1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
         width_map = {"1 Sem": 20, "1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
 
     with c_tools[1]:
-        # AÑADIDA OPCION "Barras"
         type_g = st.radio("Estilo", ["Línea", "Velas", "Barras (OHLC)"], horizontal=True, label_visibility="collapsed")
 
     with c_tools[2]:
-        # CHECKBOXES EN FILA
         cols_chk = st.columns(4)
         i_vol = cols_chk[0].checkbox("Vol", value=False)
         i_sma = cols_chk[1].checkbox("SMA", value=False)
@@ -598,7 +591,7 @@ if st.session_state.ticker_detalle:
     sma_p = 50
     if i_sma: sma_p = c_tools[2].selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3, label_visibility="collapsed")
 
-    # --- LOGICA GRAFICO ---
+    # GRAFICO
     hist = pd.DataFrame()
     try:
         hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
@@ -613,7 +606,6 @@ if st.session_state.ticker_detalle:
             x, y = hist['Ord'].values, hist['Close'].values
             if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
         
-        # Stats lines
         stat_max = hist['Close'].max(); stat_min = hist['Close'].min(); stat_avg = hist['Close'].mean()
         last_date = hist['Date'].max()
         df_price_stats = pd.DataFrame([{'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'}, {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'}, {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}])
@@ -622,27 +614,23 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # SELECCION DE ESTILO
         if type_g == "Línea":
             main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
         elif type_g == "Velas":
             rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
             main = rule + bar
-        else: # Barras (OHLC Estilo Simplificado)
-            # Regla vertical (Low-High)
+        elif type_g == "Barras (OHLC)":
             rule = base.mark_rule(color='black').encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High')
-            # Tick Apertura (izquierda) - Simulado con regla corta offset
-            # Altair básico no soporta ticks offset facil, usamos tick mark simple para Open y Close
-            tick_open = base.mark_tick(thickness=2, size=10, color='black', orient='left').encode(y='Open')
-            tick_close = base.mark_tick(thickness=2, size=10, color='black', orient='right').encode(y='Close')
+            # FIX CRASH V32.26d: Usamos marcas simples sin 'orient' para evitar errores de esquema
+            tick_open = base.mark_tick(color='black', size=10).encode(y='Open') 
+            tick_close = base.mark_tick(color='black', size=10).encode(y='Close')
             main = rule + tick_open + tick_close
 
         tooltips = [alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Close', title='Precio', format=',.2f'), alt.Tooltip('Volume', title='Vol', format=',')]
         points = base.mark_point().encode(y='Close', opacity=alt.value(0), tooltip=tooltips).add_params(hover)
         rule_hover = base.mark_rule(color='gray', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
         
-        # Manual stats layers
         stats_layers = []
         for _, r in df_price_stats.iterrows():
             stats_layers.append(alt.Chart(pd.DataFrame({'y':[r['Val']]})).mark_rule(color=r['Color'], strokeDash=[4,4]).encode(y='y'))
@@ -650,7 +638,6 @@ if st.session_state.ticker_detalle:
 
         layers = [main, points, rule_hover] + stats_layers
         
-        # Movimientos
         movs_raw = info.get('movimientos', [])
         if movs_raw:
             df_m_chart = pd.DataFrame(movs_raw)
@@ -673,7 +660,7 @@ if st.session_state.ticker_detalle:
 
         st.altair_chart(chart_final, use_container_width=True)
 
-    # 3. TABLA FIFO DEBAJO DEL GRAFICO
+    # 3. TABLA FIFO
     lotes = info.get('lotes', [])
     if lotes and now:
         st.subheader("📦 Desglose de Lotes Activos (FIFO)")
@@ -693,7 +680,7 @@ if st.session_state.ticker_detalle:
                 return [f'background-color: {color}; color: black']*len(row)
             st.dataframe(df_lotes.style.format({"Acciones": lambda x: fmt_dinamico(x), "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €", "Coste Lote": lambda x: fmt_num_es(x) + " €", "Valor Hoy": lambda x: fmt_num_es(x) + " €", "Plusvalía": lambda x: fmt_num_es(x) + " €", "% Rent.": lambda x: fmt_num_es(x) + "%"}).apply(estilo_lotes, axis=1), use_container_width=True, hide_index=True)
 
-    # 4. DESCRIPCION E HISTORIAL AL FINAL
+    # 4. DESCRIPCION E HISTORIAL
     with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
     st.subheader("📝 Movimientos Históricos")
     if info['movimientos']:
@@ -727,7 +714,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26c ---
+    # --- DISEÑO HEADER PRO V32.26d ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -741,7 +728,7 @@ else:
     
     st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS ---
+    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
@@ -773,7 +760,6 @@ else:
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
                 
-                # Manual stats layers
                 s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
                 last_d = df_w['Fecha'].max()
                 
@@ -796,7 +782,7 @@ else:
     # === SELECCIÓN DE VISTA ===
     vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
     
-    # === DESCARGA INFORME FISCAL ===
+    # === DESCARGA INFORME FISCAL (BASE V32.25) ===
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
@@ -867,6 +853,7 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
+        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
