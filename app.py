@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26e (Style Polish)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26f (Big Metrics)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -542,10 +542,11 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    .big-metric { text-align: center; padding: 10px; margin-bottom: 10px; }
-    .big-label { font-size: 1.1rem; color: gray; font-weight: 500; margin-bottom: -5px; }
-    .big-value { font-size: 1.8rem; font-weight: 700; margin: 0; }
-    .big-delta { font-size: 1rem; margin-top: -5px; }
+    /* Aumentamos tamaños de fuente aquí */
+    .big-metric { text-align: center; padding: 15px; margin-bottom: 20px; }
+    .big-label { font-size: 1.3rem; color: gray; font-weight: 600; margin-bottom: 0px; } /* Más grande y negrita */
+    .big-value { font-size: 2.8rem; font-weight: 800; margin: 0; line-height: 1.2; } /* Mucho más grande */
+    .big-delta { font-size: 1.3rem; margin-top: 0px; font-weight: 500; } /* Delta más visible */
     </style>
     """, unsafe_allow_html=True)
 
@@ -614,7 +615,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # CONDICIONAL COLOR PARA OHLC
+        # COLORES VERDE/ROJO
         cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
 
         if type_g == "Línea":
@@ -784,7 +785,7 @@ else:
     # === SELECCIÓN DE VISTA ===
     vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
     
-    # === DESCARGA INFORME FISCAL (BASE V32.25) ===
+    # === DESCARGA INFORME FISCAL ===
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
