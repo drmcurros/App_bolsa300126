@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26b (UI Tweak)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26c (UI Update)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -100,22 +100,15 @@ def traducir_texto(texto):
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
-# --- FORMATEADOR EUROPEO (3 DECIMALES POR DEFECTO PARA METRICAS) ---
+# --- FORMATEADOR EUROPEO (3 DECIMALES) ---
 def fmt_dinamico(valor, sufijo="", decimales=3):
     if valor is None: return ""
-    # Paso 1: Formato estándar con coma miles y punto decimal
     s = f"{valor:,.{decimales}f}" 
-    # Paso 2: Intercambio de caracteres (Swap)
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-    
-    # Limpieza de ceros extra solo si hay muchos
-    if "," in s:
-        s = s.rstrip('0').rstrip(',')
-    
+    if "," in s: s = s.rstrip('0').rstrip(',')
     if s == "": s = "0"
     return f"{s} {sufijo}"
 
-# Helper para tablas y PDF (Fuerza 2 decimales fijos)
 def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -534,59 +527,13 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # --- CAMBIO V32.26b: INDICADORES CHECKBOX ---
-    st.caption("Indicadores")
-    c_i1, c_i2, c_i3, c_i4 = st.columns(4)
-    i_vol = c_i1.checkbox("Volumen", value=False)
-    i_sma = c_i2.checkbox("SMA", value=False)
-    i_sup = c_i3.checkbox("Soportes", value=False)
-    i_ten = c_i4.checkbox("Tendencia", value=False)
+    # --- CAMBIOS VISUALES V32.26c: ORDEN Y ESTILO ---
     
-    inds = []
-    if i_vol: inds.append("Volumen")
-    if i_sma: inds.append("SMA")
-    if i_sup: inds.append("Soportes")
-    if i_ten: inds.append("Tendencia")
-
-    c_time, _ = st.columns([1, 3])
-    label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
-    periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
-    width_map = {"1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
-    
-    sma_p = 50
-    if "SMA" in inds: sma_p = st.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
-    type_g = st.radio("Estilo", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
-
+    # 1. METRICAS GIGANTES ARRIBA (HTML PERSONALIZADO PARA TAMAÑO DE FUENTE)
+    acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
         if not now: nom, now, desc = get_stock_data_yahoo(t)
-        hist = pd.DataFrame()
-        try:
-            hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
-            hist['Date'] = pd.to_datetime(hist['Date']).dt.date
-            hist['Volume'] = pd.to_numeric(hist['Volume'], errors='coerce').fillna(0)
-        except: pass
-
-    if not hist.empty:
-        if "SMA" in inds: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
-        if "Tendencia" in inds:
-            hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
-            x, y = hist['Ord'].values, hist['Close'].values
-            if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
-        
-        stat_max = hist['Close'].max()
-        stat_min = hist['Close'].min()
-        stat_avg = hist['Close'].mean()
-        last_date = hist['Date'].max()
-        df_price_stats = pd.DataFrame([
-            {'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'},
-            {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'},
-            {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}
-        ])
-        df_price_stats['Date'] = last_date
-
-    m1, m2, m3, m4 = st.columns(4)
-    acc = info.get('acciones', 0)
     
     valor_mercado_eur, rent = 0.0, 0.0
     fx_actual = 1.0
@@ -594,13 +541,139 @@ if st.session_state.ticker_detalle:
         fx_actual = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
         valor_mercado_eur = acc * now * fx_actual
         if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
-    
-    m1.metric("Precio", f"{now:,.2f}" if now else "N/A")
-    m2.metric("Acciones", fmt_dinamico(acc))
-    m3.metric("Valor", fmt_dinamico(valor_mercado_eur, '€'), delta=f"{fmt_num_es(rent)}%")
-    m4.metric("Trading (Realizado)", fmt_dinamico(info.get('pnl_cerrado',0), '€'))
 
-    # --- DESGLOSE FIFO ---
+    # CSS para las métricas grandes
+    st.markdown("""
+    <style>
+    .big-metric { text-align: center; border: 1px solid #e6e6e6; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    .big-label { font-size: 1.1rem; color: gray; font-weight: 500; margin-bottom: -5px; }
+    .big-value { font-size: 1.8rem; font-weight: 700; margin: 0; }
+    .big-delta { font-size: 1rem; margin-top: -5px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
+    with m2:
+        st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
+    with m3:
+        color = "green" if rent >= 0 else "red"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color}">{rent*100:+.2f}%</p></div>', unsafe_allow_html=True)
+    with m4:
+        trad = info.get('pnl_cerrado', 0)
+        color = "green" if trad >= 0 else "red"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value" style="color:{color}">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # 2. BARRA DE CONTROL UNIFICADA
+    # Columnas: Periodo | Tipo de Gráfico | Indicadores (Checkboxes)
+    c_tools = st.columns([2, 1, 3])
+    
+    with c_tools[0]:
+        # AÑADIDA OPCION "1 Sem"
+        label_t = st.select_slider("Periodo", options=["1 Sem", "1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año", label_visibility="collapsed")
+        periodo_map = {"1 Sem": "5d", "1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
+        width_map = {"1 Sem": 20, "1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
+
+    with c_tools[1]:
+        # AÑADIDA OPCION "Barras"
+        type_g = st.radio("Estilo", ["Línea", "Velas", "Barras (OHLC)"], horizontal=True, label_visibility="collapsed")
+
+    with c_tools[2]:
+        # CHECKBOXES EN FILA
+        cols_chk = st.columns(4)
+        i_vol = cols_chk[0].checkbox("Vol", value=False)
+        i_sma = cols_chk[1].checkbox("SMA", value=False)
+        i_sup = cols_chk[2].checkbox("Sop", value=False)
+        i_ten = cols_chk[3].checkbox("Tend", value=False)
+    
+    inds = []
+    if i_vol: inds.append("Volumen")
+    if i_sma: inds.append("SMA")
+    if i_sup: inds.append("Soportes")
+    if i_ten: inds.append("Tendencia")
+    
+    sma_p = 50
+    if i_sma: sma_p = c_tools[2].selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3, label_visibility="collapsed")
+
+    # --- LOGICA GRAFICO ---
+    hist = pd.DataFrame()
+    try:
+        hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
+        hist['Date'] = pd.to_datetime(hist['Date']).dt.date
+        hist['Volume'] = pd.to_numeric(hist['Volume'], errors='coerce').fillna(0)
+    except: pass
+
+    if not hist.empty:
+        if i_sma: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
+        if i_ten:
+            hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
+            x, y = hist['Ord'].values, hist['Close'].values
+            if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
+        
+        # Stats lines
+        stat_max = hist['Close'].max(); stat_min = hist['Close'].min(); stat_avg = hist['Close'].mean()
+        last_date = hist['Date'].max()
+        df_price_stats = pd.DataFrame([{'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'}, {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'}, {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}])
+        df_price_stats['Date'] = last_date
+
+        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
+        base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
+        
+        # SELECCION DE ESTILO
+        if type_g == "Línea":
+            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
+        elif type_g == "Velas":
+            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            main = rule + bar
+        else: # Barras (OHLC Estilo Simplificado)
+            # Regla vertical (Low-High)
+            rule = base.mark_rule(color='black').encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High')
+            # Tick Apertura (izquierda) - Simulado con regla corta offset
+            # Altair básico no soporta ticks offset facil, usamos tick mark simple para Open y Close
+            tick_open = base.mark_tick(thickness=2, size=10, color='black', orient='left').encode(y='Open')
+            tick_close = base.mark_tick(thickness=2, size=10, color='black', orient='right').encode(y='Close')
+            main = rule + tick_open + tick_close
+
+        tooltips = [alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Close', title='Precio', format=',.2f'), alt.Tooltip('Volume', title='Vol', format=',')]
+        points = base.mark_point().encode(y='Close', opacity=alt.value(0), tooltip=tooltips).add_params(hover)
+        rule_hover = base.mark_rule(color='gray', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
+        
+        # Manual stats layers
+        stats_layers = []
+        for _, r in df_price_stats.iterrows():
+            stats_layers.append(alt.Chart(pd.DataFrame({'y':[r['Val']]})).mark_rule(color=r['Color'], strokeDash=[4,4]).encode(y='y'))
+            stats_layers.append(alt.Chart(pd.DataFrame({'x':[r['Date']], 'y':[r['Val']], 't':[r['Label']]})).mark_text(color=r['Color'], align='left', dx=5).encode(x='x', y='y', text='t'))
+
+        layers = [main, points, rule_hover] + stats_layers
+        
+        # Movimientos
+        movs_raw = info.get('movimientos', [])
+        if movs_raw:
+            df_m_chart = pd.DataFrame(movs_raw)
+            df_m_chart['Date'] = pd.to_datetime(df_m_chart['Fecha_Raw']).dt.date
+            df_m_chart = df_m_chart[df_m_chart['Date'] >= hist['Date'].min()]
+            if not df_m_chart.empty:
+                compras = df_m_chart[df_m_chart['Tipo'] == 'Compra']
+                if not compras.empty: layers.append(alt.Chart(compras).mark_point(shape='circle', size=100, color='blue', filled=True).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
+                ventas = df_m_chart[df_m_chart['Tipo'] == 'Venta']
+                if not ventas.empty: layers.append(alt.Chart(ventas).mark_point(shape='triangle', size=100, color='red', filled=True).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
+
+        if i_sma: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA'))
+        if i_ten and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
+
+        chart_final = alt.layer(*layers).properties(height=400, width='container')
+        
+        if i_vol:
+            vol_chart = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100).add_params(hover)
+            chart_final = alt.vconcat(chart_final, vol_chart).resolve_scale(x='shared')
+
+        st.altair_chart(chart_final, use_container_width=True)
+
+    # 3. TABLA FIFO DEBAJO DEL GRAFICO
     lotes = info.get('lotes', [])
     if lotes and now:
         st.subheader("📦 Desglose de Lotes Activos (FIFO)")
@@ -611,107 +684,21 @@ if st.session_state.ticker_detalle:
             valor_paquete = cant * now * fx_actual
             plusvalia = valor_paquete - coste_paquete
             rent_lote = (plusvalia / coste_paquete) * 100 if coste_paquete > 0 else 0
-            
-            data_lotes.append({
-                "Fecha Compra": l['fecha_str'],
-                "Acciones": cant,
-                "Precio Orig. (EUR)": l['coste_por_accion_eur'],
-                "Coste Lote": coste_paquete,
-                "Valor Hoy": valor_paquete,
-                "Plusvalía": plusvalia,
-                "% Rent.": rent_lote
-            })
+            data_lotes.append({"Fecha Compra": l['fecha_str'], "Acciones": cant, "Precio Orig. (EUR)": l['coste_por_accion_eur'], "Coste Lote": coste_paquete, "Valor Hoy": valor_paquete, "Plusvalía": plusvalia, "% Rent.": rent_lote})
         
         df_lotes = pd.DataFrame(data_lotes)
         if not df_lotes.empty:
             def estilo_lotes(row):
                 color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' 
                 return [f'background-color: {color}; color: black']*len(row)
+            st.dataframe(df_lotes.style.format({"Acciones": lambda x: fmt_dinamico(x), "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €", "Coste Lote": lambda x: fmt_num_es(x) + " €", "Valor Hoy": lambda x: fmt_num_es(x) + " €", "Plusvalía": lambda x: fmt_num_es(x) + " €", "% Rent.": lambda x: fmt_num_es(x) + "%"}).apply(estilo_lotes, axis=1), use_container_width=True, hide_index=True)
 
-            # APLICAMOS FORMATO EUROPEO TAMBIÉN EN LA SUB-TABLA
-            st.dataframe(
-                df_lotes.style.format({
-                    "Acciones": lambda x: fmt_dinamico(x),
-                    "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €",
-                    "Coste Lote": lambda x: fmt_num_es(x) + " €",
-                    "Valor Hoy": lambda x: fmt_num_es(x) + " €",
-                    "Plusvalía": lambda x: fmt_num_es(x) + " €",
-                    "% Rent.": lambda x: fmt_num_es(x) + "%"
-                }).apply(estilo_lotes, axis=1), 
-                use_container_width=True, 
-                hide_index=True
-            )
-            st.caption("Nota: 'Precio Orig. (EUR)' incluye comisiones y cambio de divisa histórico.")
-
-    st.subheader("📈 Gráfico")
-    if not hist.empty:
-        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
-        base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
-        
-        if type_g == "Línea":
-            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
-        else:
-            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
-            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
-            main = rule + bar
-        
-        tooltips_completos = [
-            alt.Tooltip('Date', title='Fecha', format='%Y-%m-%d'),
-            alt.Tooltip('Close', title='Precio', format=',.2f'),
-            alt.Tooltip('Volume', title='Volumen', format=',')
-        ]
-        
-        points = base.mark_point().encode(
-            y=alt.Y('Close', scale=alt.Scale(zero=False)), 
-            opacity=alt.value(0),
-            tooltip=tooltips_completos
-        ).add_params(hover)
-
-        rule_hover = base.mark_rule(color='black', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
-        
-        stats_layers = []
-        for _, r in df_price_stats.iterrows():
-            stats_layers.append(alt.Chart(pd.DataFrame({'y':[r['Val']]})).mark_rule(color=r['Color'], strokeDash=[4,4]).encode(y='y'))
-            stats_layers.append(alt.Chart(pd.DataFrame({'x':[r['Date']], 'y':[r['Val']], 't':[r['Label']]})).mark_text(color=r['Color'], align='left', dx=5).encode(x='x', y='y', text='t'))
-
-        layers = [main, points, rule_hover] + stats_layers
-
-        movs_raw = info.get('movimientos', [])
-        if movs_raw:
-            df_m_chart = pd.DataFrame(movs_raw)
-            df_m_chart['Date'] = pd.to_datetime(df_m_chart['Fecha_Raw']).dt.date
-            min_date = hist['Date'].min()
-            df_m_chart = df_m_chart[df_m_chart['Date'] >= min_date]
-            if not df_m_chart.empty:
-                compras = df_m_chart[df_m_chart['Tipo'] == 'Compra']
-                if not compras.empty:
-                    layers.append(alt.Chart(compras).mark_point(shape='circle', size=150, color='#0044FF', filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=[alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Precio', format='.2f'), alt.Tooltip('Cantidad', title='Total Invest')]))
-                ventas = df_m_chart[df_m_chart['Tipo'] == 'Venta']
-                if not ventas.empty:
-                    layers.append(alt.Chart(ventas).mark_point(shape='circle', size=150, color='#800020', filled=True, opacity=1).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
-
-        if "SMA" in inds: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA', tooltip=['SMA']))
-        if "Tendencia" in inds and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
-        
-        chart_p = alt.layer(*layers).properties(height=350, width=800)
-        
-        if "Volumen" in inds:
-            vol = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100, width=800).add_params(hover)
-            final = alt.vconcat(chart_p, vol).resolve_scale(x='shared')
-        else: final = chart_p
-        
-        st.altair_chart(final, use_container_width=True)
-
+    # 4. DESCRIPCION E HISTORIAL AL FINAL
     with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
     st.subheader("📝 Movimientos Históricos")
     if info['movimientos']:
-        df_m = pd.DataFrame(info['movimientos'])[['Fecha_str','Tipo','Cantidad','Precio','Moneda','Comision']].rename(columns={'Fecha_str':'Fecha', 'Cantidad':'Total'})
-        df_m['Acciones'] = df_m.apply(lambda x: x['Total'] / x['Precio'] if x['Tipo'] != 'Dividendo' and x['Precio'] > 0 else 0, axis=1)
-        df_m = df_m[['Fecha', 'Tipo', 'Acciones', 'Precio', 'Total', 'Moneda', 'Comision']]
-        def color_rows(r): 
-            c = 'green' if r['Tipo']=='Compra' else '#800020' if r['Tipo']=='Venta' else '#FF8C00'
-            return [f'color: {c}']*len(r)
-        st.dataframe(df_m.style.apply(color_rows, axis=1), use_container_width=True, hide_index=True)
+        df_m = pd.DataFrame(info['movimientos'])[['Fecha_str','Tipo','Cantidad','Precio','Moneda','Comision']]
+        st.dataframe(df_m, use_container_width=True, hide_index=True)
 
 # ==========================================
 #        DASHBOARD (PORTADA)
@@ -740,7 +727,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26b ---
+    # --- DISEÑO HEADER PRO V32.26c ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -754,9 +741,8 @@ else:
     
     st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES) ---
+    # --- MÉTRICAS SECUNDARIAS ---
     m1, m2, m3, m4 = st.columns(4)
-    # fmt_dinamico ya usa 3 decimales por defecto
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
@@ -787,6 +773,7 @@ else:
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
                 
+                # Manual stats layers
                 s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
                 last_d = df_w['Fecha'].max()
                 
@@ -809,7 +796,7 @@ else:
     # === SELECCIÓN DE VISTA ===
     vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
     
-    # === DESCARGA INFORME FISCAL (BASE V32.25) ===
+    # === DESCARGA INFORME FISCAL ===
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
@@ -880,7 +867,6 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
-        # --- CAMBIO V32.26b: BOTONES JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
