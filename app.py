@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26 (Euro Format)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26b (UI Tweak)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -100,23 +100,22 @@ def traducir_texto(texto):
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
-# --- NUEVO FORMATEADOR EUROPEO (1.000,00) ---
-def fmt_dinamico(valor, sufijo=""):
+# --- FORMATEADOR EUROPEO (3 DECIMALES POR DEFECTO PARA METRICAS) ---
+def fmt_dinamico(valor, sufijo="", decimales=3):
     if valor is None: return ""
     # Paso 1: Formato estándar con coma miles y punto decimal
-    s = f"{valor:,.6f}" 
+    s = f"{valor:,.{decimales}f}" 
     # Paso 2: Intercambio de caracteres (Swap)
-    # Reemplazamos coma por 'X', punto por coma, y 'X' por punto
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
     
-    # Limpieza de ceros extra (ahora están tras la coma)
+    # Limpieza de ceros extra solo si hay muchos
     if "," in s:
         s = s.rstrip('0').rstrip(',')
     
     if s == "": s = "0"
     return f"{s} {sufijo}"
 
-# Helper para tablas y PDF (Fuerza 2 decimales fijos estilo ES)
+# Helper para tablas y PDF (Fuerza 2 decimales fijos)
 def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -212,7 +211,6 @@ def generar_pdf_historial(dataframe, titulo):
     pdf = PDF(orientation='L') 
     pdf.add_page()
     pdf.set_font("Arial", size=10)
-    # Mapeo de columnas
     cols_map = {'Fecha_str': ('Fecha', 35), 'Ticker': ('Ticker', 15), 'Descripcion': ('Empresa', 50), 'Cantidad': ('Cant.', 25), 'Precio': ('Precio', 25), 'Moneda': ('Div', 15), 'Comision': ('Com.', 20), 'Usuario': ('Usuario', 30)}
     pdf.set_fill_color(200, 220, 255)
     pdf.set_font("Arial", 'B', 10)
@@ -226,7 +224,6 @@ def generar_pdf_historial(dataframe, titulo):
     for _, row in dataframe.iterrows():
         for col_key, _, ancho in cols_validas:
             val = row[col_key]
-            # Formateo especial si es número
             if isinstance(val, (int, float)) and col_key not in ['Cantidad']: 
                 valor = fmt_num_es(val)
             else:
@@ -273,7 +270,6 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
         pdf.cell(32, 8, str(op.get('ISIN', '')), 1, 0, 'C') 
         pdf.cell(23, 8, str(op['Fecha Venta']), 1, 0, 'C')
         pdf.cell(23, 8, str(op['Fecha Compra']), 1, 0, 'C')
-        # Cantidad usa formato dinámico, Importes usan formato Euro
         pdf.cell(18, 8, fmt_dinamico(op['Cantidad']), 1, 0, 'C')
         pdf.cell(30, 8, f"{fmt_num_es(op['V. Transmisión'])}", 1, 0, 'R')
         pdf.cell(30, 8, f"{fmt_num_es(op['V. Adquisición'])}", 1, 0, 'R')
@@ -538,13 +534,27 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    c_time, c_ind = st.columns([1, 3])
+    # --- CAMBIO V32.26b: INDICADORES CHECKBOX ---
+    st.caption("Indicadores")
+    c_i1, c_i2, c_i3, c_i4 = st.columns(4)
+    i_vol = c_i1.checkbox("Volumen", value=False)
+    i_sma = c_i2.checkbox("SMA", value=False)
+    i_sup = c_i3.checkbox("Soportes", value=False)
+    i_ten = c_i4.checkbox("Tendencia", value=False)
+    
+    inds = []
+    if i_vol: inds.append("Volumen")
+    if i_sma: inds.append("SMA")
+    if i_sup: inds.append("Soportes")
+    if i_ten: inds.append("Tendencia")
+
+    c_time, _ = st.columns([1, 3])
     label_t = c_time.select_slider("Periodo", options=["1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año")
     periodo_map = {"1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
     width_map = {"1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
-    inds = c_ind.multiselect("Indicadores", ["Volumen", "SMA", "Soportes", "Tendencia"])
+    
     sma_p = 50
-    if "SMA" in inds: sma_p = c_ind.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
+    if "SMA" in inds: sma_p = st.selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3)
     type_g = st.radio("Estilo", ["Línea", "Velas"], horizontal=True, label_visibility="collapsed")
 
     with st.spinner("Cargando..."):
@@ -587,7 +597,7 @@ if st.session_state.ticker_detalle:
     
     m1.metric("Precio", f"{now:,.2f}" if now else "N/A")
     m2.metric("Acciones", fmt_dinamico(acc))
-    m3.metric("Valor", fmt_dinamico(valor_mercado_eur, '€'), delta=f"{rent:+.2f}%")
+    m3.metric("Valor", fmt_dinamico(valor_mercado_eur, '€'), delta=f"{fmt_num_es(rent)}%")
     m4.metric("Trading (Realizado)", fmt_dinamico(info.get('pnl_cerrado',0), '€'))
 
     # --- DESGLOSE FIFO ---
@@ -730,7 +740,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26 ---
+    # --- DISEÑO HEADER PRO V32.26b ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -744,8 +754,9 @@ else:
     
     st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS ---
+    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES) ---
     m1, m2, m3, m4 = st.columns(4)
+    # fmt_dinamico ya usa 3 decimales por defecto
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
@@ -869,10 +880,13 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
-        c1, c2 = st.columns(2)
-        c1.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
-        try: c2.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
+        # --- CAMBIO V32.26b: BOTONES JUNTOS ---
+        c1, c2, c3 = st.columns([1, 1, 6])
+        with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
+        try: 
+            with c2: st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: pass
+        
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']
         if not df.empty:
             st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
