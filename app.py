@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26d (Chart Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26e (Style Polish)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -527,7 +527,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # 1. METRICAS GIGANTES ARRIBA
+    # 1. METRICAS GIGANTES ARRIBA (LIMPIAS SIN BORDER)
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -542,7 +542,7 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    .big-metric { text-align: center; border: 1px solid #e6e6e6; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    .big-metric { text-align: center; padding: 10px; margin-bottom: 10px; }
     .big-label { font-size: 1.1rem; color: gray; font-weight: 500; margin-bottom: -5px; }
     .big-value { font-size: 1.8rem; font-weight: 700; margin: 0; }
     .big-delta { font-size: 1rem; margin-top: -5px; }
@@ -577,10 +577,10 @@ if st.session_state.ticker_detalle:
 
     with c_tools[2]:
         cols_chk = st.columns(4)
-        i_vol = cols_chk[0].checkbox("Vol", value=False)
+        i_vol = cols_chk[0].checkbox("Volumen", value=False)
         i_sma = cols_chk[1].checkbox("SMA", value=False)
-        i_sup = cols_chk[2].checkbox("Sop", value=False)
-        i_ten = cols_chk[3].checkbox("Tend", value=False)
+        i_sup = cols_chk[2].checkbox("Soportes", value=False)
+        i_ten = cols_chk[3].checkbox("Tendencia", value=False)
     
     inds = []
     if i_vol: inds.append("Volumen")
@@ -614,17 +614,19 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
+        # CONDICIONAL COLOR PARA OHLC
+        cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
+
         if type_g == "Línea":
             main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
         elif type_g == "Velas":
-            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
-            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=cond_color)
+            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=cond_color)
             main = rule + bar
         elif type_g == "Barras (OHLC)":
-            rule = base.mark_rule(color='black').encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High')
-            # FIX CRASH V32.26d: Usamos marcas simples sin 'orient' para evitar errores de esquema
-            tick_open = base.mark_tick(color='black', size=10).encode(y='Open') 
-            tick_close = base.mark_tick(color='black', size=10).encode(y='Close')
+            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=cond_color)
+            tick_open = base.mark_tick(size=10).encode(y='Open', color=cond_color) 
+            tick_close = base.mark_tick(size=10).encode(y='Close', color=cond_color)
             main = rule + tick_open + tick_close
 
         tooltips = [alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Close', title='Precio', format=',.2f'), alt.Tooltip('Volume', title='Vol', format=',')]
@@ -655,7 +657,7 @@ if st.session_state.ticker_detalle:
         chart_final = alt.layer(*layers).properties(height=400, width='container')
         
         if i_vol:
-            vol_chart = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=alt.condition("datum.Open<datum.Close", alt.value("#00C805"), alt.value("#FF0000"))).properties(height=100).add_params(hover)
+            vol_chart = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=cond_color).properties(height=100).add_params(hover)
             chart_final = alt.vconcat(chart_final, vol_chart).resolve_scale(x='shared')
 
         st.altair_chart(chart_final, use_container_width=True)
@@ -714,7 +716,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26d ---
+    # --- DISEÑO HEADER PRO V32.26e ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -853,7 +855,6 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
-        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
