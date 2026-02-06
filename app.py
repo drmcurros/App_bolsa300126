@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26f (Big Metrics)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26g (Big Bold)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -542,26 +542,30 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    /* Aumentamos tamaños de fuente aquí */
-    .big-metric { text-align: center; padding: 15px; margin-bottom: 20px; }
-    .big-label { font-size: 1.3rem; color: gray; font-weight: 600; margin-bottom: 0px; } /* Más grande y negrita */
-    .big-value { font-size: 2.8rem; font-weight: 800; margin: 0; line-height: 1.2; } /* Mucho más grande */
-    .big-delta { font-size: 1.3rem; margin-top: 0px; font-weight: 500; } /* Delta más visible */
+    /* FORMATO GIGANTE V32.26g */
+    .big-metric { text-align: center; padding: 10px; margin-bottom: 20px; line-height: 1.1; }
+    .big-label { font-size: 5rem; font-weight: bold; margin-bottom: 0px; } /* Titulos Gigantes en Negrita */
+    .big-value { font-size: 5rem; font-weight: bold; margin: 0; } /* Valores Gigantes en Negrita */
+    .big-delta { font-size: 2.5rem; font-weight: bold; margin-top: 5px; } /* Delta ajustado */
     </style>
     """, unsafe_allow_html=True)
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
+        # Precio: Siempre positivo -> Verde
+        st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value" style="color:#00C805">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
     with m2:
-        st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
+        # Acciones: Siempre positivo -> Verde
+        st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value" style="color:#00C805">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
     with m3:
-        color = "green" if rent >= 0 else "red"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
+        # Valor: Siempre positivo -> Verde (Delta varia)
+        color_delta = "#00C805" if rent >= 0 else "#FF0000"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value" style="color:#00C805">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color_delta}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
     with m4:
+        # Trading: Variable -> Color logico
         trad = info.get('pnl_cerrado', 0)
-        color = "green" if trad >= 0 else "red"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value" style="color:{color}">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
+        color_trad = "#00C805" if trad >= 0 else "#FF0000"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value" style="color:{color_trad}">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
 
     st.divider()
 
