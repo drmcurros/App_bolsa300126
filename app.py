@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.25 (Stable Restore)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.25 (Master Restore)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -115,14 +115,9 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
         return yf.Ticker(pair).history(period="1d")['Close'].iloc[-1]
     except: return 1.0
 
-# --- CAPTURA DE ISIN DOBLE (Yahoo + FMP) ---
+# --- CAPTURA DE ISIN (ESTRATEGIA V32.25 DUAL) ---
 @st.cache_data(show_spinner=False)
 def get_ticker_isin(ticker):
-    """
-    Intenta obtener el ISIN. 
-    1. Primero consulta Yahoo Finance (Rápido).
-    2. Si falla, consulta Financial Modeling Prep (Más fiable).
-    """
     # 1. Intento Yahoo
     try:
         t = yf.Ticker(ticker)
@@ -130,8 +125,7 @@ def get_ticker_isin(ticker):
         if isin and isin != '-' and len(isin) > 5:
             return isin
     except: pass
-
-    # 2. Intento FMP (Fallback)
+    # 2. Intento FMP (Respaldo)
     try:
         api_key = st.secrets["fmp"]["api_key"]
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
@@ -141,8 +135,7 @@ def get_ticker_isin(ticker):
             if isin and len(isin) > 5:
                 return isin
     except: pass
-
-    return "" # No encontrado
+    return ""
 
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
@@ -237,12 +230,11 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
     pdf.ln(2)
 
     pdf.set_font("Arial", 'B', 9)
-    # AJUSTE DE COLUMNAS PARA INCLUIR ISIN (SIN COLUMNA EXTRA DE EMPRESA PARA NO SOBRECARGAR)
     cols = [("Ticker", 18), ("ISIN", 32), ("F. Venta", 23), ("F. Compra", 23), ("Cant.", 18), ("V. Transm.", 30), ("V. Adquis.", 30), ("Rendimiento", 30)]
     for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
     
-    pdf.set_font("Arial", '', 8)
+    pdf.set_font("Arial", '', 9)
     total_ganancias = 0.0
     ops_acciones = [d for d in datos_fiscales if d['Tipo'] == "Ganancia/Pérdida"]
     
@@ -414,7 +406,7 @@ if not df.empty:
         comision_eur = comi * fx
         
         if precio <= 0: precio = 1
-        acciones_op = dinero / precio 
+        acciones_op = round(dinero / precio, 8) 
         
         en_rango_visual = (año_seleccionado == "Todos los años") or (row.get('Año') == int(año_seleccionado))
         es_año_fiscal = (row.get('Año') == int(año_seleccionado)) if año_seleccionado != "Todos los años" else True
@@ -462,14 +454,14 @@ if not df.empty:
             valor_transmision_neto_total = dinero_eur - comision_eur
             precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
 
-            # --- CAPTURA ISIN (DUAL) ---
+            # --- CAPTURA ISIN ---
             isin_actual = ""
             if es_año_fiscal:
                 if tick not in isin_cache_local:
                     isin_cache_local[tick] = get_ticker_isin(tick)
                 isin_actual = isin_cache_local[tick]
 
-            while acciones_a_vender > 0 and colas_fifo[tick]:
+            while acciones_a_vender > 0.00000001 and colas_fifo[tick]:
                 lote = colas_fifo[tick][0]
                 cantidad_consumida = 0
                 
@@ -786,6 +778,7 @@ else:
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
                 
+                # --- STATS MANUALES (V32.22 FIX) ---
                 s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
                 last_d = df_w['Fecha'].max()
                 
@@ -808,7 +801,7 @@ else:
     # === SELECCIÓN DE VISTA ===
     vista_movil = st.sidebar.toggle("📱 Vista Móvil / Tarjetas", value=False)
     
-    # === DESCARGA INFORME FISCAL ===
+    # === DESCARGA INFORME FISCAL (BASE V32.25) ===
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
