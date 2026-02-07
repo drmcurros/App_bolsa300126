@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.30 (Anti-None)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.31 (Silence)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -351,7 +351,7 @@ if data:
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL REORGANIZADA ---
+# --- BARRA LATERAL REORGANIZADA (V32.31 SILENCIADA) ---
 with st.sidebar:
     st.header("Filtros")
     lista_años = ["Todos los años"]
@@ -361,7 +361,7 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
     
-    # RESERVA ESPACIO PARA IMPUESTOS (Container objeto, NO 'with')
+    # RESERVA ESPACIO (CONTAINER)
     tax_container = st.container()
     
     st.divider()
@@ -742,12 +742,8 @@ else:
             if not df_r.empty:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
-                
-                # --- FIX CRITICO: RESTAURACION DE CUMSUM (V32.27b) ---
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-                # -----------------------------------------------------
-                
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
@@ -764,14 +760,13 @@ else:
     # --- LOGICA VISTA MOVIL (SESSION STATE) ---
     vista_movil = st.session_state.cfg_movil
     
-    # --- DESCARGA INFORME FISCAL (FIX V32.30: NO 'with', DIRECT CALL) ---
+    # --- DESCARGA INFORME FISCAL (FIX V32.31 SILENCIADA) ---
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
-        tax_container.markdown("---") # Linea
-        tax_container.markdown(f"**⚖️ Impuestos {año_seleccionado}**") # Titulo
+        _ = tax_container.markdown("---") # Linea silenciada
+        _ = tax_container.markdown(f"**⚖️ Impuestos {año_seleccionado}**") # Titulo silenciado
         try:
             pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-            # Descarga directa sobre el objeto container
-            tax_container.download_button(
+            _ = tax_container.download_button(
                 label=f"📄 Informe Renta {año_seleccionado}", 
                 data=pdf_fiscal, 
                 file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
