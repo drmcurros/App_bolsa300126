@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.33 (Linear Flow)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.33 (Linear Clean)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -352,7 +352,7 @@ if data:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
 # ==============================================================================
-# 1. SIDEBAR (PARTE SUPERIOR): FILTROS
+# 1. SIDEBAR (TOP): SOLO FILTROS (SE PINTAN AQUÍ PRIMERO)
 # ==============================================================================
 with st.sidebar:
     st.header("Filtros")
@@ -360,12 +360,13 @@ with st.sidebar:
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
         lista_años += list(años_disponibles)
+    # VARIABLE CLAVE SE DEFINE AQUI
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
     st.divider()
 
 # ==============================================================================
-# 2. MOTOR DE CÁLCULO (MOVIDO ANTES DEL RESTO DE LA SIDEBAR)
+# 2. MOTOR DE CÁLCULO (EJECUTADO ANTES DE SEGUIR PINTANDO)
 # ==============================================================================
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
@@ -480,10 +481,11 @@ if not df.empty:
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==============================================================================
-# 3. SIDEBAR (PARTE INFERIOR): IMPUESTOS + BOTONES + CONFIG
+# 3. SIDEBAR (RESTO): IMPUESTOS, BOTONES Y CONFIG
+# (SE EJECUTA AHORA QUE YA TENEMOS LOS CALCULOS HECHOS)
 # ==============================================================================
 with st.sidebar:
-    # A. IMPUESTOS (YA CALCULADOS, SE MUESTRAN AQUÍ DIRECTAMENTE)
+    # A. IMPUESTOS (DIRECTO, SIN PLACEHOLDERS)
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
         try:
@@ -499,7 +501,7 @@ with st.sidebar:
             st.error(f"Error PDF: {e}")
         st.divider()
 
-    # B. BOTÓN DE REGISTRO
+    # B. BOTONERA DE REGISTRO
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
@@ -526,7 +528,6 @@ with st.sidebar:
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
                 
-                # ZONA HORARIA
                 tz_form = "Europe/Madrid"
                 if "cfg_zona" in st.session_state: tz_form = st.session_state.cfg_zona
                 
@@ -546,7 +547,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-    # C. CONFIGURACIÓN FINAL
+    # C. CONFIGURACION
     st.markdown("---")
     st.header("Configuración")
     mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
@@ -842,8 +843,7 @@ else:
             st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
             titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
-            for i, title in enumerate(titles): 
-                c[i].markdown(f"**{title}**")
+            for i, title in enumerate(titles): c[i].markdown(f"**{title}**")
             st.markdown("---")
             for row in tabla:
                 c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
