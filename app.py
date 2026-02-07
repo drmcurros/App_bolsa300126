@@ -19,7 +19,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.44 (Bulk Import)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.45 (Tax Perfect)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -408,11 +408,7 @@ if not df.empty:
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         
         fx = 1.0 
-        # LOGICA MIXTA V32.43:
-        # Si la moneda es USD, la 'Cantidad' viene en USD. Hay que pasarla a EUR para el cálculo fiscal.
-        # Usamos el 'Cambio' guardado en Airtable.
         val_cambio_db = float(row.get('Cambio', 1.0))
-        
         if mon != "EUR":
              if val_cambio_db != 1.0 and val_cambio_db > 0:
                  fx = val_cambio_db
@@ -441,12 +437,16 @@ if not df.empty:
         _ = cartera[tick]['movimientos'].append(row)
 
         if tipo == "Compra":
-            delta_i = dinero_eur
-            cartera[tick]['acciones'] += acciones_op
-            cartera[tick]['coste_total_eur'] += dinero_eur
-            if en_rango_visual: compras_eur += dinero_eur
+            # --- FIX FISCAL V32.45: SUMAR COMISION AL COSTE BASE ---
+            coste_real_compra = dinero_eur + (comi * fx)
+            delta_i = coste_real_compra # El dinero que sale del bolsillo es el total
             
-            _ = colas_fifo[tick].append({'fecha': row.get('Fecha_dt'), 'fecha_str': row.get('Fecha_str', '').split(' ')[0], 'acciones_restantes': acciones_op, 'coste_por_accion_eur': dinero_eur / acciones_op if acciones_op > 0 else 0})
+            cartera[tick]['acciones'] += acciones_op
+            cartera[tick]['coste_total_eur'] += coste_real_compra
+            
+            if en_rango_visual: compras_eur += coste_real_compra
+            
+            _ = colas_fifo[tick].append({'fecha': row.get('Fecha_dt'), 'fecha_str': row.get('Fecha_str', '').split(' ')[0], 'acciones_restantes': acciones_op, 'coste_por_accion_eur': coste_real_compra / acciones_op if acciones_op > 0 else 0})
             if cartera[tick]['acciones'] > 0: cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
 
         elif tipo == "Venta":
@@ -535,7 +535,7 @@ if not df.empty:
 # 3. SIDEBAR (RESTO)
 # ==============================================================================
 with st.sidebar:
-    # --- A. IMPORTACION MASIVA (CSV) V32.44 ---
+    # --- A. IMPORTACION MASIVA ---
     with st.expander("📂 Importación Masiva (CSV)", expanded=False):
         st.info("Sube un CSV con: Fecha, Hora, Ticker, Tipo, Total_Dinero, Precio, Comision, Moneda")
         uploaded_file = st.file_uploader("Subir archivo CSV", type=["csv"])
@@ -551,16 +551,12 @@ with st.sidebar:
                     
                     for idx, row in df_upload.iterrows():
                         try:
-                            # Parsear fecha
                             dt_obj = pd.to_datetime(f"{row['Fecha']} {row.get('Hora', '00:00')}", dayfirst=True)
                             mon = row['Moneda'].upper().strip()
-                            
-                            # Logica FX
                             fx_val = 1.0
                             if mon != "EUR":
                                 fx_val = get_historical_eur_rate(dt_obj, mon)
                             
-                            # Datos para Airtable
                             record = {
                                 "Usuario": st.session_state.current_user,
                                 "Fecha": dt_obj.strftime("%Y/%m/%d %H:%M"),
@@ -573,15 +569,13 @@ with st.sidebar:
                                 "Cambio": fx_val,
                                 "Descripcion": "Importado CSV"
                             }
-                            
-                            # Completar nombre empresa
                             try:
                                 n, _, _ = get_stock_data_yahoo(record['Ticker'])
                                 if n: record['Descripcion'] = n
                             except: pass
 
                             table_ops.create(record)
-                            time.sleep(0.25) # Rate limit Airtable (5 req/sec)
+                            time.sleep(0.25)
                             progress_bar.progress((idx + 1) / total_rows)
                             
                         except Exception as e:
@@ -640,8 +634,7 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
-                st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
-                st.warning("⚖️ **Nota Fiscal:** Si usas USD, el sistema buscará el cambio del día seleccionado y guardará la operación en **EUR**.")
+                st.info("💡 Consejo: Pon siempre los importes BRUTOS (Precio x Acciones).")
                 
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
@@ -649,9 +642,9 @@ with st.sidebar:
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
                 
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total euros/dólares gastados/recibidos (incl. comisiones).")
-                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario de cotización.")
-                comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos totales del broker.")
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="IMPORTE BRUTO (Precio x Acciones).")
+                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario.")
+                comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos del broker.")
                 
                 st.markdown("---")
                 
@@ -856,7 +849,6 @@ if st.session_state.ticker_detalle:
             def estilo_lotes(row):
                 color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' 
                 return [f'background-color: {color}; color: black']*len(row)
-            # --- V32.42: SORT HISTORIAL DETALLE ---
             df_lotes = df_lotes.sort_values(by="Fecha Compra", ascending=False)
             st.dataframe(df_lotes.style.format({"Acciones": lambda x: fmt_dinamico(x), "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €", "Coste Lote": lambda x: fmt_num_es(x) + " €", "Valor Hoy": lambda x: fmt_num_es(x) + " €", "Plusvalía": lambda x: fmt_num_es(x) + " €", "% Rent.": lambda x: fmt_num_es(x) + "%"}).apply(estilo_lotes, axis=1), use_container_width=True, hide_index=True)
 
@@ -864,7 +856,6 @@ if st.session_state.ticker_detalle:
     st.subheader("📝 Movimientos Históricos")
     if info['movimientos']:
         df_m = pd.DataFrame(info['movimientos'])
-        # --- V32.42: SORT DESC + COLS UNIFICADAS ---
         df_m = df_m.sort_values(by='Fecha_dt', ascending=False)
         cols_ver = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         for c in cols_ver:
@@ -875,10 +866,8 @@ if st.session_state.ticker_detalle:
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
-    # --- CÁLCULO PREVIO DE DATOS ---
     tabla = []
     valor_total_cartera = 0.0
-    
     with st.spinner("Conectando con el mercado..."):
         for t, i in cartera.items():
             alive = i['acciones'] > 0.001
@@ -889,19 +878,15 @@ else:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
-                
                 valor_total_cartera += val
-                
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX + TOOLTIP V32.41) ---
     c_hdr_1, c_hdr_2 = st.columns([1, 2])
-    with c_hdr_1:
-        st.title("💼 Cartera") 
+    with c_hdr_1: st.title("💼 Cartera") 
     with c_hdr_2:
         st.markdown(f"""
             <div style="text-align: right; line-height: 4rem;">
@@ -912,14 +897,12 @@ else:
     
     _ = st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES + TOOLTIPS) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%", help="Ganancia Real: (Ventas - Compras) + Dividendos - Comisiones.")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'), help="Resultado bruto solo de operaciones cerradas (Venta - Compra).")
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'), help="Suma bruta de los dividendos recibidos.")
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}", help="Gastos totales del broker.")
 
-    # --- GRÁFICO ROI (FIX MANUAL LAYERS) ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -928,51 +911,22 @@ else:
             if not df_r.empty:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
-                
-                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-                
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
-                
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
                 if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-                elif ymin < 0 < ymax:
-                    off = abs(ymax)/(ymax-ymin)
-                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
-
+                elif ymin < 0 < ymax: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=1)]
                 base = alt.Chart(df_w).encode(x='Fecha:T')
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                
-                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
-                last_d = df_w['Fecha'].max()
-                
-                rule_max = alt.Chart(pd.DataFrame({'y': [s_max]})).mark_rule(color='green', strokeDash=[4,4]).encode(y='y')
-                lbl_max = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_max], 't': [f"Max: {s_max:.1f}%"]})).mark_text(align='left', dx=5, color='green').encode(x='x', y='y', text='t')
-
-                rule_min = alt.Chart(pd.DataFrame({'y': [s_min]})).mark_rule(color='red', strokeDash=[4,4]).encode(y='y')
-                lbl_min = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_min], 't': [f"Min: {s_min:.1f}%"]})).mark_text(align='left', dx=5, color='red').encode(x='x', y='y', text='t')
-
-                rule_avg = alt.Chart(pd.DataFrame({'y': [s_avg]})).mark_rule(color='blue', strokeDash=[4,4]).encode(y='y')
-                lbl_avg = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_avg], 't': [f"Med: {s_avg:.1f}%"]})).mark_text(align='left', dx=5, color='blue').encode(x='x', y='y', text='t')
-                
-                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
-                pts = base.mark_point(opacity=0).add_params(hover)
-                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-                st.altair_chart((area + rule_zero + rule_max + lbl_max + rule_min + lbl_min + rule_avg + lbl_avg + pts + crs), use_container_width=True)
+                st.altair_chart((area + rule_zero), use_container_width=True)
 
     _ = st.divider()
-    
-    # --- LOGICA VISTA MOVIL (SESSION STATE) ---
-    vista_movil = st.session_state.cfg_movil
-
     if tabla:
-        # --- CAMBIO V32.26m: NOMBRE SECCION ---
         st.subheader("📊 Mi Portafolio") 
-        
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
             for row in tabla:
@@ -992,7 +946,6 @@ else:
                     if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
-
         else:
             _ = st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
@@ -1021,7 +974,6 @@ else:
     _ = st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
-        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
@@ -1029,7 +981,6 @@ else:
                 st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: 
             pass
-        # --- V32.42: SORT DESC + COLS UNIFICADAS ---
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
         st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
