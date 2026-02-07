@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.41 (Final + Tooltips)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.42 (History Sort)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -523,7 +523,7 @@ if not df.empty:
         _ = roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==============================================================================
-# 3. SIDEBAR (RESTO)
+# 3. SIDEBAR (RESTO): IMPUESTOS + BOTONES
 # ==============================================================================
 with st.sidebar:
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
@@ -793,13 +793,21 @@ if st.session_state.ticker_detalle:
             def estilo_lotes(row):
                 color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' 
                 return [f'background-color: {color}; color: black']*len(row)
+            # --- V32.42: SORT HISTORIAL DETALLE ---
+            df_lotes = df_lotes.sort_values(by="Fecha Compra", ascending=False)
             st.dataframe(df_lotes.style.format({"Acciones": lambda x: fmt_dinamico(x), "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €", "Coste Lote": lambda x: fmt_num_es(x) + " €", "Valor Hoy": lambda x: fmt_num_es(x) + " €", "Plusvalía": lambda x: fmt_num_es(x) + " €", "% Rent.": lambda x: fmt_num_es(x) + "%"}).apply(estilo_lotes, axis=1), use_container_width=True, hide_index=True)
 
     with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
     st.subheader("📝 Movimientos Históricos")
     if info['movimientos']:
-        df_m = pd.DataFrame(info['movimientos'])[['Fecha_str','Tipo','Cantidad','Precio','Moneda','Comision']]
-        st.dataframe(df_m, use_container_width=True, hide_index=True)
+        df_m = pd.DataFrame(info['movimientos'])
+        # --- V32.42: SORT DESC + COLS UNIFICADAS ---
+        df_m = df_m.sort_values(by='Fecha_dt', ascending=False)
+        cols_ver = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
+        # Nos aseguramos de que existan, si no, se crean vacías para evitar error
+        for c in cols_ver:
+            if c not in df_m.columns: df_m[c] = None
+        st.dataframe(df_m[cols_ver], use_container_width=True, hide_index=True)
 
 # ==========================================
 #        DASHBOARD (PORTADA)
@@ -859,7 +867,6 @@ else:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
                 
-                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
                 
@@ -959,5 +966,7 @@ else:
                 st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: 
             pass
-        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Cambio']
-        if not df.empty: st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
+        # --- V32.42: SORT DESC + COLS UNIFICADAS ---
+        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
+        df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
+        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
