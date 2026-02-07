@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.32 (Clean Sidebar)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.32 (Final Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -361,8 +361,8 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
     
-    # 1. Creamos el contenedor VACÍO aquí arriba
-    tax_container = st.container() 
+    # RESERVA ESPACIO PARA IMPUESTOS
+    tax_container = st.container()
     
     st.divider()
 
@@ -742,8 +742,12 @@ else:
             if not df_r.empty:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
+                
+                # --- FIX CRITICO: RESTAURACION DE CUMSUM (V32.27b) ---
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
+                # -----------------------------------------------------
+                
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
@@ -757,14 +761,23 @@ else:
 
     st.divider()
     
-    # 2. Rellenamos el contenedor desde aquí abajo (FIX FINAL V32.32)
+    # --- LOGICA VISTA MOVIL (SESSION STATE) ---
+    vista_movil = st.session_state.cfg_movil
+    
+    # --- DESCARGA INFORME FISCAL (FIX V32.32: USO DE 'WITH') ---
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
-        with tax_container:
+        with tax_container: # Se abre el contexto directamente
             st.divider()
             st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
             try:
                 pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-                st.download_button(f"📄 Informe Renta {año_seleccionado}", pdf_fiscal, f"Informe_Fiscal_{año_seleccionado}.pdf", "application/pdf", use_container_width=True)
+                st.download_button(
+                    label=f"📄 Informe Renta {año_seleccionado}", 
+                    data=pdf_fiscal, 
+                    file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
+                    mime="application/pdf", 
+                    use_container_width=True
+                )
             except: pass
 
     if tabla:
