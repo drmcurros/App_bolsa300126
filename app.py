@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.31 (Silence)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.32 (Clean Sidebar)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -351,7 +351,7 @@ if data:
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL REORGANIZADA (V32.31 SILENCIADA) ---
+# --- BARRA LATERAL REORGANIZADA ---
 with st.sidebar:
     st.header("Filtros")
     lista_años = ["Todos los años"]
@@ -361,8 +361,8 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
     
-    # RESERVA ESPACIO (CONTAINER)
-    tax_container = st.container()
+    # 1. Creamos el contenedor VACÍO aquí arriba
+    tax_container = st.container() 
     
     st.divider()
 
@@ -757,23 +757,15 @@ else:
 
     st.divider()
     
-    # --- LOGICA VISTA MOVIL (SESSION STATE) ---
-    vista_movil = st.session_state.cfg_movil
-    
-    # --- DESCARGA INFORME FISCAL (FIX V32.31 SILENCIADA) ---
+    # 2. Rellenamos el contenedor desde aquí abajo (FIX FINAL V32.32)
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
-        _ = tax_container.markdown("---") # Linea silenciada
-        _ = tax_container.markdown(f"**⚖️ Impuestos {año_seleccionado}**") # Titulo silenciado
-        try:
-            pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-            _ = tax_container.download_button(
-                label=f"📄 Informe Renta {año_seleccionado}", 
-                data=pdf_fiscal, 
-                file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
-                mime="application/pdf", 
-                use_container_width=True
-            )
-        except: pass
+        with tax_container:
+            st.divider()
+            st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
+            try:
+                pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
+                st.download_button(f"📄 Informe Renta {año_seleccionado}", pdf_fiscal, f"Informe_Fiscal_{año_seleccionado}.pdf", "application/pdf", use_container_width=True)
+            except: pass
 
     if tabla:
         st.subheader("📊 Mi Portafolio") 
