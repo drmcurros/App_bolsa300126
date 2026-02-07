@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26h (Clean Style)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26i (Estilo Portada)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -287,7 +287,7 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
 
     pdf.set_font("Arial", 'B', 9)
     cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
+    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
 
     pdf.set_font("Arial", '', 9)
@@ -362,14 +362,14 @@ with st.sidebar:
     st.divider()
 
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
-        if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
+        if button_add := st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
             st.session_state.reset_seed = int(datetime.now().timestamp())
             st.rerun()
 
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         st.markdown("### 📝 Datos de la Operación")
-        if st.button("❌ Cerrar", use_container_width=True):
+        if button_close := st.button("❌ Cerrar", use_container_width=True):
             st.session_state.adding_mode = False
             st.session_state.pending_data = None
             st.rerun()
@@ -527,7 +527,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # 1. METRICAS GIGANTES ARRIBA (LIMPIAS SIN BORDER)
+    # 1. METRICAS GIGANTES (ESTILO PORTADA)
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -542,44 +542,48 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    /* Estilo "Metric Standard" pero con color */
+    /* Estilo Portada V32.26i */
     .big-metric { 
         background-color: transparent; 
-        padding: 5px; 
+        padding: 10px; 
         text-align: left; 
     }
     .big-label { 
-        font-size: 0.9rem; 
-        color: gray; 
-        font-weight: 700; 
-        margin-bottom: 0px; 
+        font-size: 1.1rem; 
+        color: #555; /* Gris oscuro como la portada */
+        font-weight: 600; 
+        margin-bottom: 5px; 
     }
     .big-value { 
-        font-size: 2.2rem; 
-        font-weight: 700; 
+        font-size: 2.8rem; /* Tamaño grande como la portada */
+        font-weight: 800; /* Negrita fuerte */
         margin: 0; 
         line-height: 1.2;
+        color: #000; /* Color neutro forzado */
     }
     .big-delta { 
-        font-size: 1rem; 
-        font-weight: 500; 
-        margin-top: 0px; 
+        font-size: 1.2rem; 
+        font-weight: 600; 
+        margin-top: 5px; 
     }
     </style>
     """, unsafe_allow_html=True)
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value" style="color:#00C805">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
+        # Precio: Neutro
+        st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
     with m2:
-        st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value" style="color:#00C805">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
+        # Acciones: Neutro
+        st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
     with m3:
-        color = "#00C805" if rent >= 0 else "#FF0000"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value" style="color:#00C805">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
+        # Valor: Neutro + Delta con Color
+        color_delta = "#00C805" if rent >= 0 else "#FF0000"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color_delta}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
     with m4:
+        # Trading: Neutro
         trad = info.get('pnl_cerrado', 0)
-        color = "#00C805" if trad >= 0 else "#FF0000"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value" style="color:{color}">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -633,7 +637,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # CONDICIONAL COLOR PARA OHLC
+        # COLORES VERDE/ROJO
         cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
 
         if type_g == "Línea":
@@ -735,7 +739,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26h ---
+    # --- DISEÑO HEADER PRO V32.26i ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -874,7 +878,6 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
-        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
