@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26j (Pro UI)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26k (Refined Style)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -527,7 +527,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # 1. METRICAS GIGANTES (ESTILO PORTADA V32.26j)
+    # 1. METRICAS ESTILO V32.26k (CLEAN & BOLD)
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -542,7 +542,7 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    /* Estilo "Pill" para el porcentaje */
+    /* Estilo "Pill" similar a V32.26j */
     .metric-container {
         text-align: left;
         padding: 5px 0;
@@ -554,7 +554,7 @@ if st.session_state.ticker_detalle:
     }
     .metric-value {
         font-size: 2.5rem;
-        font-weight: 700;
+        font-weight: 400; /* V32.26k: Normal weight (sin negrita) */
         color: #111827; /* Gray-900 (Neutro) */
         line-height: 1.1;
     }
@@ -573,10 +573,11 @@ if st.session_state.ticker_detalle:
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
+        mon_symbol = "€" if info.get("moneda_origen") == "EUR" else info.get("moneda_origen","")
         st.markdown(f'''
         <div class="metric-container">
             <div class="metric-label">Precio</div>
-            <div class="metric-value">{now:,.2f} {info.get("moneda_origen","")}</div>
+            <div class="metric-value">{fmt_dinamico(now, mon_symbol, 2)}</div>
         </div>
         ''', unsafe_allow_html=True)
     
@@ -589,7 +590,6 @@ if st.session_state.ticker_detalle:
         ''', unsafe_allow_html=True)
         
     with m3:
-        # Lógica para el "Pill" de porcentaje
         rent_pct = rent * 100
         delta_class = "delta-pos" if rent >= 0 else "delta-neg"
         symbol = "↑" if rent >= 0 else "↓"
@@ -764,7 +764,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26j ---
+    # --- DISEÑO HEADER PRO V32.26k ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
