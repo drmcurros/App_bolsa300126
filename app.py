@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.41 (Tooltips & Historical Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.40 (Tooltips & Fixes)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -115,17 +115,15 @@ def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- FUNCION CRITICA: BUSQUEDA PRECIO HISTORICO ---
+# --- NUEVA FUNCION: PRECIO HISTORICO ---
 def get_historical_stock_price(ticker, dt_obj):
-    """Obtiene el precio de cierre para el día solicitado (o el anterior disponible)."""
     try:
         stock = yf.Ticker(ticker)
-        # Búsqueda en un rango de 4 días para evitar fines de semana
-        start_date = dt_obj.date()
-        end_date = start_date + timedelta(days=4)
-        data = stock.history(start=start_date, end=end_date)
-        if not data.empty:
-            return float(data['Close'].iloc[0])
+        start = dt_obj.date()
+        end = start + timedelta(days=4)
+        hist = stock.history(start=start, end=end)
+        if not hist.empty:
+            return float(hist['Close'].iloc[0])
     except: pass
     return 0.0
 
@@ -210,21 +208,15 @@ def get_stock_data_yahoo(ticker):
     except: pass
     return None, None, None
 
+# --- TU FUNCIÓN DE GUARDADO ---
 def guardar_en_airtable(record):
     try:
-        # 1. Envía el dato a la nube (Airtable)
         record["Usuario"] = st.session_state.current_user
         table_ops.create(record)
-        
-        # 2. Muestra mensaje de éxito
         st.toast(f"✅ Operación Guardada: {record['Ticker']}", icon="💾")
         time.sleep(1) 
-        
-        # 3. Limpia el formulario
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
-        
-        # 4. ¡LA CLAVE! Reinicia la app completa
         st.rerun()
     except Exception as e: st.error(f"Error guardando: {e}")
 
@@ -360,7 +352,6 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
 # --- APP INICIO ---
 if not login_system(): st.stop()
 
-# BARRA DE USUARIO
 c_user, c_logout = st.columns([6, 1])
 c_user.write(f"👤 **{st.session_state.current_user}** ({st.session_state.user_role.upper()})")
 if c_logout.button("Salir"):
@@ -372,7 +363,6 @@ ver_todo = False
 if st.session_state.user_role == 'admin':
     ver_todo = st.toggle("👁️ Modo Admin", value=False)
 
-# CARGA DATOS
 try: data = table_ops.all()
 except: data = []
 
@@ -399,7 +389,7 @@ if data:
         df['Cambio'] = pd.to_numeric(df['Cambio'], errors='coerce').fillna(1.0)
 
 # ==============================================================================
-# 1. SIDEBAR: FILTROS E IMPUESTOS
+# 1. SIDEBAR (TOP): FILTROS
 # ==============================================================================
 with st.sidebar:
     st.header("Filtros")
@@ -412,7 +402,7 @@ with st.sidebar:
     st.divider()
 
 # ==============================================================================
-# 2. MOTOR DE CÁLCULO (FIFO + ROI + FISCAL)
+# 2. MOTOR DE CÁLCULO
 # ==============================================================================
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
@@ -424,13 +414,16 @@ if not df.empty:
     isin_cache_local = {}
 
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
-        tipo, tick = row.get('Tipo'), str(row.get('Ticker', 'UNKNOWN')).strip()
+        tipo, tick = row.get('Tipo'), str(row.get('Ticker')).strip()
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         
-        # Como en esta versión ya convertimos a EUR en el guardado, dinero ya es EUR
-        dinero_eur = dinero
-        if precio <= 0: precio = 0.0001
+        fx = 1.0 
+        if mon != "EUR":
+             fx = get_exchange_rate_now(mon, MONEDA_BASE)
+
+        dinero_eur = dinero * fx
+        if precio <= 0: precio = 1
         
         acciones_op = round(dinero / precio, 8) 
         
@@ -439,8 +432,8 @@ if not df.empty:
 
         delta_p, delta_i = 0.0, 0.0
         
-        if en_rango_visual: total_comi += comi
-        delta_p -= comi
+        if en_rango_visual: total_comi += (comi * fx)
+        delta_p -= (comi * fx)
 
         if tick not in cartera:
             colas_fifo[tick] = [] 
@@ -462,35 +455,49 @@ if not df.empty:
         elif tipo == "Venta":
             acciones_a_vender = acciones_op
             coste_total_venta_fifo = 0.0
-            valor_transmision_neto_total = dinero_eur - comi 
+            valor_transmision_neto_total = dinero_eur * fx - (comi * fx) 
             precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
 
             isin_actual = ""
             if es_año_fiscal:
-                if tick not in isin_cache_local: isin_cache_local[tick] = get_ticker_isin(tick)
+                if tick not in isin_cache_local:
+                    isin_cache_local[tick] = get_ticker_isin(tick)
                 isin_actual = isin_cache_local[tick]
 
             while acciones_a_vender > 0.00000001 and colas_fifo[tick]:
                 lote = colas_fifo[tick][0]
-                cantidad_consumida = min(lote['acciones_restantes'], acciones_a_vender)
-                
-                coste_total_venta_fifo += cantidad_consumida * lote['coste_por_accion_eur']
+                cantidad_consumida = 0
+                if lote['acciones_restantes'] <= acciones_a_vender:
+                    cantidad_consumida = lote['acciones_restantes']
+                    coste_total_venta_fifo += cantidad_consumida * lote['coste_por_accion_eur']
+                    acciones_a_vender -= cantidad_consumida
+                    colas_fifo[tick].pop(0)
+                else:
+                    cantidad_consumida = acciones_a_vender
+                    coste_total_venta_fifo += cantidad_consumida * lote['coste_por_accion_eur']
+                    lote['acciones_restantes'] -= cantidad_consumida
+                    acciones_a_vender = 0
                 
                 if es_año_fiscal:
                     v_adquisicion = cantidad_consumida * lote['coste_por_accion_eur']
                     v_transmision = cantidad_consumida * precio_venta_neto_unitario
+                    rendimiento = v_transmision - v_adquisicion
+                    nombre_empresa = cartera[tick]['desc']
+                    
                     reporte_fiscal_log.append({
-                        "Tipo": "Ganancia/Pérdida", "Ticker": tick, "Empresa": cartera[tick]['desc'],
-                        "ISIN": isin_actual, "Fecha Venta": row.get('Fecha_str', '').split(' ')[0], 
-                        "Fecha Compra": lote['fecha_str'], "Cantidad": cantidad_consumida, 
-                        "V. Transmisión": v_transmision, "V. Adquisición": v_adquisicion, "Rendimiento": v_transmision - v_adquisicion
+                        "Tipo": "Ganancia/Pérdida", 
+                        "Ticker": tick, 
+                        "Empresa": nombre_empresa,
+                        "ISIN": isin_actual, 
+                        "Fecha Venta": row.get('Fecha_str', '').split(' ')[0], 
+                        "Fecha Compra": lote['fecha_str'], 
+                        "Cantidad": cantidad_consumida, 
+                        "V. Transmisión": v_transmision, 
+                        "V. Adquisición": v_adquisicion, 
+                        "Rendimiento": rendimiento
                     })
 
-                lote['acciones_restantes'] -= cantidad_consumida
-                acciones_a_vender -= cantidad_consumida
-                if lote['acciones_restantes'] <= 0: colas_fifo[tick].pop(0)
-
-            beneficio = (dinero_eur - comi) - coste_total_venta_fifo
+            beneficio = (dinero_eur - (comi * fx)) - coste_total_venta_fifo
             delta_p += beneficio
             
             if en_rango_visual: 
@@ -500,183 +507,279 @@ if not df.empty:
             
             cartera[tick]['acciones'] -= acciones_op
             cartera[tick]['coste_total_eur'] -= coste_total_venta_fifo
-            cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones'] if cartera[tick]['acciones'] > 0 else 0
+            
+            if cartera[tick]['acciones'] < 0.000001: 
+                cartera[tick]['acciones'] = 0.0
+                cartera[tick]['coste_total_eur'] = 0.0
+                cartera[tick]['pmc'] = 0.0
+            else:
+                cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
 
         elif tipo == "Dividendo":
             delta_p += dinero_eur
-            div_neto = dinero_eur - comi
+            div_neto = (dinero_eur) - (comi * fx)
             if en_rango_visual: total_div += dinero_eur
+            
             if es_año_fiscal:
+                nombre_empresa = cartera[tick]['desc']
                 reporte_fiscal_log.append({
-                    "Tipo": "Dividendo", "Ticker": tick, "Empresa": cartera[tick]['desc'],
-                    "Fecha": row.get('Fecha_str', '').split(' ')[0], "Bruto": dinero_eur,
-                    "Gastos": comi, "Neto": div_neto
+                    "Tipo": "Dividendo",
+                    "Ticker": tick,
+                    "Empresa": nombre_empresa,
+                    "Fecha": row.get('Fecha_str', '').split(' ')[0],
+                    "Bruto": dinero_eur,
+                    "Gastos": comi * fx,
+                    "Neto": div_neto
                 })
         
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==============================================================================
-# 3. SIDEBAR (BOT): IMPUESTOS + REGISTRO
+# 3. SIDEBAR (RESTO): IMPUESTOS + FORMULARIO MEJORADO
 # ==============================================================================
 with st.sidebar:
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
-        with st.expander("📝 Datos Titular"):
-            nombre_titular = st.text_input("Nombre:")
-            dni_titular = st.text_input("DNI:")
         
-        pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado, nombre_titular, dni_titular)
-        st.download_button(f"📄 Informe Fiscal {año_seleccionado}", data=pdf_fiscal, file_name=f"Informe_{año_seleccionado}.pdf", use_container_width=True)
+        with st.expander("📝 Datos del Titular", expanded=True):
+            nombre_titular = st.text_input("Nombre Completo:", key="tax_name")
+            dni_titular = st.text_input("DNI/NIF:", key="tax_dni")
+        
+        try:
+            st.caption("🔍 Vista Previa Datos FIFO")
+            df_fiscal = pd.DataFrame(reporte_fiscal_log)
+            if not df_fiscal.empty:
+                st.dataframe(df_fiscal[['Ticker', 'Fecha Venta', 'Cantidad', 'Rendimiento']], hide_index=True, use_container_width=True, height=150)
+
+            pdf_fiscal = generar_informe_fiscal_completo(
+                reporte_fiscal_log, 
+                año_seleccionado, 
+                nombre_titular if nombre_titular else "______________________", 
+                dni_titular if dni_titular else "______________________"
+            )
+            st.download_button(
+                label=f"📄 Informe {año_seleccionado}", 
+                data=pdf_fiscal, 
+                file_name=f"Fiscal_{año_seleccionado}.pdf", 
+                mime="application/pdf", 
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"Error PDF: {e}")
         st.divider()
 
-    if not st.session_state.adding_mode:
+    if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
+            st.session_state.reset_seed = int(datetime.now().timestamp())
             st.rerun()
 
-    if st.session_state.adding_mode:
-        st.markdown("### 📝 Datos del Trade")
-        if st.button("❌ Cerrar"):
+    if st.session_state.adding_mode or st.session_state.pending_data is not None:
+        st.markdown("### 📝 Datos de la Operación")
+        if st.button("❌ Cerrar", use_container_width=True):
             st.session_state.adding_mode = False
+            st.session_state.pending_data = None
             st.rerun()
-            
-        with st.form("trade_form"):
-            tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
-            ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
-            moneda = st.selectbox("Moneda", ["EUR", "USD"])
-            c1, c2 = st.columns(2)
-            dinero_total = c1.number_input("Importe Total", min_value=0.0)
-            precio_manual = c2.number_input("Precio/Acción (0=Auto)", min_value=0.0, format="%.4f")
-            comision = st.number_input("Comisión", min_value=0.0)
-            
-            tz = st.session_state.cfg_zona
-            d_op = st.date_input("Día", datetime.now(ZoneInfo(tz)))
-            t_op = st.time_input("Hora", datetime.now(ZoneInfo(tz)))
-            dt_op_final = datetime.combine(d_op, t_op)
 
-            if st.form_submit_button("🔍 Validar y Guardar"):
-                if ticker and dinero_total > 0:
-                    p_final = float(precio_manual)
-                    
-                    # --- MEJORA V32.41: BUSQUEDA HISTORICA OBLIGATORIA ---
-                    if p_final <= 0:
-                        with st.spinner(f"Consultando mercado para {ticker}..."):
-                            p_final = get_historical_stock_price(ticker, dt_op_final)
-                    
-                    if p_final > 0:
-                        nom, _, _ = get_stock_data_fmp(ticker)
-                        if not nom: nom, _, _ = get_stock_data_yahoo(ticker)
+        if st.session_state.pending_data is None:
+            with st.form("trade_form"):
+                st.info("💡 Consejo: Para auto-precio histórico, deja el campo en 0.")
+                
+                tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
+                ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
+                desc_manual = st.text_input("Descripción (Opcional)")
+                moneda = st.selectbox("Moneda", ["EUR", "USD"])
+                c1, c2 = st.columns(2)
+                dinero_total = c1.number_input("Importe Total", min_value=0.00, step=10.0)
+                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.4f")
+                comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
+                
+                tz_form = st.session_state.cfg_zona
+                d_f = st.date_input("Día", datetime.now(ZoneInfo(tz_form)))
+                t_f = st.time_input("Hora", datetime.now(ZoneInfo(tz_form)))
+                dt_final = datetime.combine(d_f, t_f)
+                
+                if st.form_submit_button("🔍 Validar y Guardar"):
+                    if ticker and dinero_total > 0:
+                        precio_final = float(precio_manual)
                         
-                        # Conversión a EUR inmediata
-                        fx = 1.0
-                        if moneda != "EUR":
-                            fx = get_historical_eur_rate(dt_op_final, moneda)
+                        # --- MEJORA: BÚSQUEDA HISTÓRICA OBLIGATORIA ---
+                        if precio_final <= 0:
+                            with st.spinner(f"Buscando precio de mercado para {ticker}..."):
+                                precio_final = get_historical_stock_price(ticker, dt_final)
                         
-                        datos = {
-                            "Tipo": tipo, "Ticker": ticker, "Descripcion": nom if nom else ticker,
-                            "Moneda": "EUR", "Cantidad": dinero_total * fx, "Precio": p_final * fx,
-                            "Comision": comision * fx, "Cambio": fx, "Fecha": dt_op_final.strftime("%Y/%m/%d %H:%M")
-                        }
-                        guardar_en_airtable(datos)
-                    else:
-                        st.error(f"❌ No se encontró precio para {ticker}. Introdúcelo manualmente.")
+                        if precio_final > 0:
+                            nom, pre_now, _ = get_stock_data_fmp(ticker)
+                            if not nom: nom, pre_now, _ = get_stock_data_yahoo(ticker)
+                            
+                            nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
+                            cant_f = float(dinero_total)
+                            comi_f = float(comision)
+                            moneda_f = moneda
+                            fx_hist = 1.0
 
-    st.divider()
+                            if moneda != "EUR":
+                                fx_hist = get_historical_eur_rate(dt_final, moneda)
+                                cant_f *= fx_hist
+                                precio_final *= fx_hist
+                                comi_f *= fx_hist
+                                moneda_f = "EUR" 
+
+                            datos = {
+                                "Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, 
+                                "Moneda": moneda_f, "Cantidad": cant_f, 
+                                "Precio": precio_final, "Comision": comi_f, 
+                                "Cambio": fx_hist, "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
+                            }
+                            guardar_en_airtable(datos)
+                        else:
+                            st.error(f"❌ No se encontró precio para {ticker} en {d_f}. Introduce el precio manualmente.")
+        else:
+            st.warning(f"⚠️ No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
+            c_si, c_no = st.columns(2)
+            if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
+            if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
+
+    st.markdown("---")
     st.header("Configuración")
     st.session_state.cfg_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1)
-    st.session_state.cfg_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=st.session_state.cfg_movil)
+    st.session_state.cfg_movil = st.toggle("📱 Vista Móvil", value=st.session_state.cfg_movil)
 
 # ==========================================
-# 4. VISTA DETALLE (DE TU BASE V32.40)
+# 4. VISTA DETALLE ACTIVO
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
     info = cartera.get(t, {})
-    if st.button("⬅️ Volver"): st.session_state.ticker_detalle = None; st.rerun()
-    
+    if st.button("⬅️ Volver", type="secondary"): st.session_state.ticker_detalle = None; st.rerun()
     st.divider()
     c1, c2 = st.columns([1, 5])
-    c1.image(get_logo_url(t), width=80)
-    c2.title(f"{info.get('desc')} ({t})")
+    with c1: st.image(get_logo_url(t), width=80)
+    with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    with st.spinner("Cargando mercado..."):
-        _, p_now, desc_larga = get_stock_data_fmp(t)
-        if not p_now: _, p_now, desc_larga = get_stock_data_yahoo(t)
-
-    # MÉTRICAS ESTILO V32.40
-    st.markdown("""<style>.metric-value { font-size: 2.5rem; font-weight: bold; }</style>""", unsafe_allow_html=True)
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Precio Actual", fmt_dinamico(p_now, "€"))
-    m2.metric("Tus Acciones", fmt_dinamico(info['acciones']))
+    acc = info.get('acciones', 0)
+    with st.spinner("Cargando..."):
+        nom, now, desc = get_stock_data_fmp(t)
+        if not now: nom, now, desc = get_stock_data_yahoo(t)
     
-    val_m = info['acciones'] * p_now if p_now else 0
-    rent_l = (val_m - info['coste_total_eur'])/info['coste_total_eur'] if info['coste_total_eur']>0 else 0
-    m3.metric("Valor Mercado", fmt_dinamico(val_m, "€"), f"{rent_l*100:.2f}%")
-    m4.metric("Bº Realizado", fmt_dinamico(info['pnl_cerrado'], "€"))
+    val_mercado_eur, rent = 0.0, 0.0
+    fx_actual = 1.0
+    if now and acc > 0:
+        fx_actual = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
+        val_mercado_eur = acc * now * fx_actual
+        if info.get('coste_total_eur') > 0: rent = (val_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
+
+    st.markdown("""
+    <style>
+    .metric-container { text-align: left; padding: 5px 0; }
+    .metric-label { font-size: 1rem; color: #6b7280; margin-bottom: 2px; }
+    .metric-value { font-size: 2.5rem; font-weight: 400; color: #111827; line-height: 1.1; }
+    .metric-delta-box { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.9rem; font-weight: 600; margin-top: 5px; }
+    .delta-pos { background-color: #dcfce7; color: #166534; } 
+    .delta-neg { background-color: #fee2e2; color: #991b1b; } 
+    </style>
+    """, unsafe_allow_html=True)
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">Precio</div><div class="metric-value">{fmt_dinamico(now, info.get("moneda_origen",""), 2)}</div></div>', unsafe_allow_html=True)
+    with m2:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">Acciones</div><div class="metric-value">{fmt_dinamico(acc)}</div></div>', unsafe_allow_html=True)
+    with m3:
+        d_class = "delta-pos" if rent >= 0 else "delta-neg"
+        symbol = "↑" if rent >= 0 else "↓"
+        st.markdown(f'<div class="metric-container"><div class="metric-label">Valor Actual</div><div class="metric-value">{fmt_dinamico(val_mercado_eur, "€")}</div><div class="metric-delta-box {d_class}">{symbol} {fmt_num_es(rent*100)}%</div></div>', unsafe_allow_html=True)
+    with m4:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">Trading (Realizado)</div><div class="metric-value">{fmt_dinamico(info.get("pnl_cerrado",0), "€")}</div></div>', unsafe_allow_html=True)
 
     st.divider()
-    # GRÁFICO ALTAIR INTERACTIVO
-    hist = yf.Ticker(t).history(period="1y").reset_index()
-    if not hist.empty:
-        base_g = alt.Chart(hist).encode(x='Date:T')
-        line_g = base_g.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
-        st.altair_chart(line_g.properties(height=300), use_container_width=True)
 
-    # LOTES FIFO
-    if info['lotes']:
-        st.subheader("📦 Lotes FIFO")
-        df_l = pd.DataFrame([{"Fecha": l['fecha_str'], "Acciones": l['acciones_restantes'], "Precio": l['coste_por_accion_eur']} for l in info['lotes'] if l['acciones_restantes']>0])
-        st.dataframe(df_l, use_container_width=True, hide_index=True)
+    # --- GRÁFICO ALTAIR ---
+    type_g = st.radio("Estilo de Precio", ["Línea", "Velas"], horizontal=True)
+    hist = pd.DataFrame()
+    try:
+        hist = yf.Ticker(t).history(period="1y").reset_index()
+        hist['Date'] = pd.to_datetime(hist['Date']).dt.date
+    except: pass
+
+    if not hist.empty:
+        base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
+        if type_g == "Línea":
+            chart = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
+        else:
+            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            bar = base.mark_bar().encode(y='Open', y2='Close', color=alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000")))
+            chart = rule + bar
+        st.altair_chart(chart.properties(height=400), use_container_width=True)
+
+    st.subheader("📦 Lotes FIFO Activos")
+    lotes = info.get('lotes', [])
+    if lotes:
+        data_lotes = []
+        for l in lotes:
+            if l['acciones_restantes'] > 0:
+                coste_l = l['acciones_restantes'] * l['coste_por_accion_eur']
+                val_l = l['acciones_restantes'] * now * fx_actual
+                data_lotes.append({"Fecha Compra": l['fecha_str'], "Acciones": l['acciones_restantes'], "Precio Orig. (EUR)": l['coste_por_accion_eur'], "Coste Lote": coste_l, "Valor Hoy": val_l, "Plusvalía": val_l - coste_l})
+        st.dataframe(pd.DataFrame(data_lotes), use_container_width=True, hide_index=True)
 
 # ==========================================
-# 5. DASHBOARD PRINCIPAL (DE TU BASE V32.40)
+# 5. DASHBOARD (PORTADA)
 # ==========================================
 else:
-    tabla_v = []
+    tabla = []
     val_total_cartera = 0.0
-    for t, i in cartera.items():
-        if i['acciones'] > 0.001 or abs(i['pnl_cerrado']) > 0.01:
-            _, p_now, _ = get_stock_data_fmp(t)
-            if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
-            v_act = i['acciones'] * p_now if p_now else 0
-            val_total_cartera += v_act
-            tabla_v.append({"Logo": get_logo_url(t), "Ticker": t, "Empresa": i['desc'], "Acciones": i['acciones'], "Valor": v_act, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Latente": (v_act - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0, "Trading": i['pnl_cerrado']})
+    
+    with st.spinner("Conectando con el mercado..."):
+        for t, i in cartera.items():
+            alive = i['acciones'] > 0.001
+            act = abs(i['pnl_cerrado']) > 0.01
+            if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
+                _, p_now, _ = get_stock_data_fmp(t)
+                if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
+                val = i['acciones'] * p_now if p_now else 0
+                val_total_cartera += val
+                r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
+                tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
-    c_tit, c_val = st.columns([1, 2])
-    c_tit.title("💼 Cartera")
-    c_val.markdown(f'<div style="text-align: right;"><span style="color: gray;">Valor Actual</span><br><span style="font-size: 3.5rem; font-weight: bold;">{fmt_dinamico(val_total_cartera, "€")}</span></div>', unsafe_allow_html=True)
+    neto = pnl_cerrado + total_div - total_comi
+    roi = (neto/compras_eur)*100 if compras_eur>0 else 0
+
+    c_hdr_1, c_hdr_2 = st.columns([1, 2])
+    with c_hdr_1: st.title("💼 Cartera") 
+    with c_hdr_2:
+        st.markdown(f'<div style="text-align: right; line-height: 4rem;"><span style="font-size: 1.5rem; color: gray;">Valor Cartera</span> <span style="font-size: 4.0rem; font-weight: bold; margin-left: 10px;">{fmt_dinamico(val_total_cartera, "€")}</span></div>', unsafe_allow_html=True)
     
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    neto_t = pnl_cerrado + total_div - total_comi
-    roi_t = (neto_t/compras_eur)*100 if compras_eur>0 else 0
-    m1.metric("Bº Neto", fmt_dinamico(neto_t, "€"), f"{roi_t:.2f}%")
-    m2.metric("Trading", fmt_dinamico(pnl_cerrado, "€"))
-    m3.metric("Dividendos", fmt_dinamico(total_div, "€"))
+    m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
+    m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
+    m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}")
 
-    # CURVA DE ROI (GRADIENTES V32.40)
+    # GRÁFICO ROI
     if roi_log:
-        df_roi = pd.DataFrame(roi_log)
-        df_roi['Fecha'] = pd.to_datetime(df_roi['Fecha'])
-        df_roi.set_index('Fecha', inplace=True)
-        df_w = df_roi.resample('W').sum().fillna(0)
-        df_w['ROI'] = (df_w['Delta_Profit'].cumsum() / df_w['Delta_Invest'].cumsum() * 100).fillna(0)
-        
-        area_roi = alt.Chart(df_w.reset_index()).mark_area(opacity=0.5, color='purple').encode(x='Fecha:T', y='ROI:Q')
-        st.altair_chart(area_roi.properties(height=200), use_container_width=True)
-
-    # TABLA / TARJETAS
-    if tabla_v:
-        if st.session_state.cfg_movil:
-            for r in tabla_v:
-                with st.container(border=True):
-                    st.write(f"**{r['Ticker']}** | {fmt_dinamico(r['Valor'], '€')}")
-                    if st.button("Ver", key=f"v_{r['Ticker']}"): st.session_state.ticker_detalle = r['Ticker']; st.rerun()
-        else:
-            df_final = pd.DataFrame(tabla_v)
-            st.dataframe(df_final, use_container_width=True, hide_index=True)
+        df_r = pd.DataFrame(roi_log)
+        df_r['Fecha'] = pd.to_datetime(df_r['Fecha'])
+        df_r.set_index('Fecha', inplace=True)
+        df_w = df_r.resample('W').sum().fillna(0)
+        df_w['ROI'] = (df_w['Delta_Profit'].cumsum()/df_w['Delta_Invest'].cumsum()*100).fillna(0)
+        st.altair_chart(alt.Chart(df_w.reset_index()).mark_area(opacity=0.5, color='purple').encode(x='Fecha:T', y='ROI:Q').properties(height=200), use_container_width=True)
 
     st.divider()
-    st.subheader("📜 Historial Completo")
-    st.dataframe(df[['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']], use_container_width=True, hide_index=True)
+    if tabla:
+        if st.session_state.cfg_movil:
+            for row in tabla:
+                with st.container(border=True):
+                    st.write(f"**{row['Ticker']}** | {row['Empresa']}")
+                    st.metric("Valor", fmt_dinamico(row['Valor'], '€'), f"{fmt_num_es(row['Latente']*100)}%")
+                    if st.button("🔍 Detalle", key=f"mob_{row['Ticker']}"): 
+                        st.session_state.ticker_detalle = row['Ticker']; st.rerun()
+        else:
+            df_show = pd.DataFrame(tabla)
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("📜 Historial")
+    if not df.empty:
+        st.dataframe(df[['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']], use_container_width=True, hide_index=True)
