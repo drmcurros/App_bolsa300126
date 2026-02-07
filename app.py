@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.32 (Final Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.33 (Linear Flow)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -351,7 +351,9 @@ if data:
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL REORGANIZADA ---
+# ==============================================================================
+# 1. SIDEBAR (PARTE SUPERIOR): FILTROS
+# ==============================================================================
 with st.sidebar:
     st.header("Filtros")
     lista_años = ["Todos los años"]
@@ -360,64 +362,11 @@ with st.sidebar:
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
-    
-    # RESERVA ESPACIO PARA IMPUESTOS
-    tax_container = st.container()
-    
     st.divider()
 
-    if not st.session_state.adding_mode and st.session_state.pending_data is None:
-        if button_add := st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
-            st.session_state.adding_mode = True
-            st.session_state.reset_seed = int(datetime.now().timestamp())
-            st.rerun()
-
-    if st.session_state.adding_mode or st.session_state.pending_data is not None:
-        st.markdown("### 📝 Datos de la Operación")
-        if button_close := st.button("❌ Cerrar", use_container_width=True):
-            st.session_state.adding_mode = False
-            st.session_state.pending_data = None
-            st.rerun()
-
-        if st.session_state.pending_data is None:
-            with st.form("trade_form"):
-                st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
-                tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
-                ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
-                desc_manual = st.text_input("Descripción (Opcional)")
-                moneda = st.selectbox("Moneda", ["EUR", "USD"])
-                c1, c2 = st.columns(2)
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0)
-                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
-                comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
-                st.markdown("---")
-                
-                tz_form = "Europe/Madrid"
-                if "cfg_zona" in st.session_state: tz_form = st.session_state.cfg_zona
-                
-                dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(tz_form))), st.time_input("Hora", datetime.now(ZoneInfo(tz_form))))
-                if st.form_submit_button("🔍 Validar y Guardar"):
-                    if ticker and dinero_total > 0:
-                        nom, pre, _ = get_stock_data_fmp(ticker)
-                        if not nom: nom, pre, _ = get_stock_data_yahoo(ticker)
-                        nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
-                        precio_final = precio_manual if precio_manual > 0 else (pre if pre else 0.0)
-                        datos = {"Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, "Moneda": moneda, "Cantidad": float(dinero_total), "Precio": float(precio_final), "Comision": float(comision), "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")}
-                        if precio_final > 0: guardar_en_airtable(datos)
-                        else: st.session_state.pending_data = datos; st.rerun()
-        else:
-            st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
-            c_si, c_no = st.columns(2)
-            if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
-            if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
-
-    # --- CONFIGURACION AL FINAL ---
-    st.markdown("---")
-    st.header("Configuración")
-    mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
-    vista_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=False, key="cfg_movil")
-
-# 3. MOTOR DE CÁLCULO
+# ==============================================================================
+# 2. MOTOR DE CÁLCULO (MOVIDO ANTES DEL RESTO DE LA SIDEBAR)
+# ==============================================================================
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
@@ -529,6 +478,79 @@ if not df.empty:
                 })
         
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
+
+# ==============================================================================
+# 3. SIDEBAR (PARTE INFERIOR): IMPUESTOS + BOTONES + CONFIG
+# ==============================================================================
+with st.sidebar:
+    # A. IMPUESTOS (YA CALCULADOS, SE MUESTRAN AQUÍ DIRECTAMENTE)
+    if año_seleccionado != "Todos los años" and reporte_fiscal_log:
+        st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
+        try:
+            pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
+            st.download_button(
+                label=f"📄 Informe Renta {año_seleccionado}", 
+                data=pdf_fiscal, 
+                file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
+                mime="application/pdf", 
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"Error PDF: {e}")
+        st.divider()
+
+    # B. BOTÓN DE REGISTRO
+    if not st.session_state.adding_mode and st.session_state.pending_data is None:
+        if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
+            st.session_state.adding_mode = True
+            st.session_state.reset_seed = int(datetime.now().timestamp())
+            st.rerun()
+
+    if st.session_state.adding_mode or st.session_state.pending_data is not None:
+        st.markdown("### 📝 Datos de la Operación")
+        if st.button("❌ Cerrar", use_container_width=True):
+            st.session_state.adding_mode = False
+            st.session_state.pending_data = None
+            st.rerun()
+
+        if st.session_state.pending_data is None:
+            with st.form("trade_form"):
+                st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
+                tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
+                ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
+                desc_manual = st.text_input("Descripción (Opcional)")
+                moneda = st.selectbox("Moneda", ["EUR", "USD"])
+                c1, c2 = st.columns(2)
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0)
+                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
+                comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
+                st.markdown("---")
+                
+                # ZONA HORARIA
+                tz_form = "Europe/Madrid"
+                if "cfg_zona" in st.session_state: tz_form = st.session_state.cfg_zona
+                
+                dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(tz_form))), st.time_input("Hora", datetime.now(ZoneInfo(tz_form))))
+                if st.form_submit_button("🔍 Validar y Guardar"):
+                    if ticker and dinero_total > 0:
+                        nom, pre, _ = get_stock_data_fmp(ticker)
+                        if not nom: nom, pre, _ = get_stock_data_yahoo(ticker)
+                        nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
+                        precio_final = precio_manual if precio_manual > 0 else (pre if pre else 0.0)
+                        datos = {"Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, "Moneda": moneda, "Cantidad": float(dinero_total), "Precio": float(precio_final), "Comision": float(comision), "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")}
+                        if precio_final > 0: guardar_en_airtable(datos)
+                        else: st.session_state.pending_data = datos; st.rerun()
+        else:
+            st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
+            c_si, c_no = st.columns(2)
+            if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
+            if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
+
+    # C. CONFIGURACIÓN FINAL
+    st.markdown("---")
+    st.header("Configuración")
+    mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
+    vista_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=False, key="cfg_movil")
 
 # ==========================================
 #        VISTA DETALLE
@@ -698,8 +720,10 @@ if st.session_state.ticker_detalle:
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
+    # --- CÁLCULO PREVIO DE DATOS ---
     tabla = []
     valor_total_cartera = 0.0
+    
     with st.spinner("Conectando con el mercado..."):
         for t, i in cartera.items():
             alive = i['acciones'] > 0.001
@@ -710,15 +734,19 @@ else:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
+                
                 valor_total_cartera += val
+                
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
+    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
     c_hdr_1, c_hdr_2 = st.columns([1, 2])
-    with c_hdr_1: st.title("💼 Cartera") 
+    with c_hdr_1:
+        st.title("💼 Cartera") 
     with c_hdr_2:
         st.markdown(f"""
             <div style="text-align: right; line-height: 4rem;">
@@ -726,14 +754,17 @@ else:
                 <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True)
+    
     st.markdown("---")
 
+    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}")
 
+    # --- GRÁFICO ROI (FIX MANUAL LAYERS) ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -743,45 +774,50 @@ else:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
                 
-                # --- FIX CRITICO: RESTAURACION DE CUMSUM (V32.27b) ---
+                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-                # -----------------------------------------------------
                 
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
+                
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
                 if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-                elif ymin < 0 < ymax: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=1)]
+                elif ymin < 0 < ymax:
+                    off = abs(ymax)/(ymax-ymin)
+                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
+
                 base = alt.Chart(df_w).encode(x='Fecha:T')
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                st.altair_chart((area + rule_zero), use_container_width=True)
+                
+                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
+                last_d = df_w['Fecha'].max()
+                
+                rule_max = alt.Chart(pd.DataFrame({'y': [s_max]})).mark_rule(color='green', strokeDash=[4,4]).encode(y='y')
+                lbl_max = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_max], 't': [f"Max: {s_max:.1f}%"]})).mark_text(align='left', dx=5, color='green').encode(x='x', y='y', text='t')
+
+                rule_min = alt.Chart(pd.DataFrame({'y': [s_min]})).mark_rule(color='red', strokeDash=[4,4]).encode(y='y')
+                lbl_min = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_min], 't': [f"Min: {s_min:.1f}%"]})).mark_text(align='left', dx=5, color='red').encode(x='x', y='y', text='t')
+
+                rule_avg = alt.Chart(pd.DataFrame({'y': [s_avg]})).mark_rule(color='blue', strokeDash=[4,4]).encode(y='y')
+                lbl_avg = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_avg], 't': [f"Med: {s_avg:.1f}%"]})).mark_text(align='left', dx=5, color='blue').encode(x='x', y='y', text='t')
+                
+                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
+                pts = base.mark_point(opacity=0).add_params(hover)
+                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
+                st.altair_chart((area + rule_zero + rule_max + lbl_max + rule_min + lbl_min + rule_avg + lbl_avg + pts + crs), use_container_width=True)
 
     st.divider()
     
     # --- LOGICA VISTA MOVIL (SESSION STATE) ---
     vista_movil = st.session_state.cfg_movil
-    
-    # --- DESCARGA INFORME FISCAL (FIX V32.32: USO DE 'WITH') ---
-    if año_seleccionado != "Todos los años" and reporte_fiscal_log:
-        with tax_container: # Se abre el contexto directamente
-            st.divider()
-            st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
-            try:
-                pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-                st.download_button(
-                    label=f"📄 Informe Renta {año_seleccionado}", 
-                    data=pdf_fiscal, 
-                    file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
-                    mime="application/pdf", 
-                    use_container_width=True
-                )
-            except: pass
 
     if tabla:
+        # --- CAMBIO V32.26m: NOMBRE SECCION ---
         st.subheader("📊 Mi Portafolio") 
+        
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
             for row in tabla:
@@ -801,11 +837,13 @@ else:
                     if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
+
         else:
             st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
             titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
-            for i, title in enumerate(titles): c[i].markdown(f"**{title}**")
+            for i, title in enumerate(titles): 
+                c[i].markdown(f"**{title}**")
             st.markdown("---")
             for row in tabla:
                 c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
@@ -829,6 +867,7 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
+        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
