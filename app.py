@@ -18,10 +18,10 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.27 (Hotfix ROI)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.28 (Layout Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
-# --- ESTADO INICIAL ---
+# --- ESTADO ---
 if "pending_data" not in st.session_state: st.session_state.pending_data = None
 if "adding_mode" not in st.session_state: st.session_state.adding_mode = False
 if "reset_seed" not in st.session_state: st.session_state.reset_seed = 0
@@ -351,7 +351,7 @@ if data:
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL REORGANIZADA (V32.27) ---
+# --- BARRA LATERAL (V32.28: PLACEHOLDER IMPUESTOS) ---
 with st.sidebar:
     st.header("Filtros")
     lista_años = ["Todos los años"]
@@ -360,6 +360,9 @@ with st.sidebar:
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
+    
+    # === AQUI RESERVAMOS EL ESPACIO PARA IMPUESTOS (AUNQUE SE CALCULE LUEGO) ===
+    tax_container = st.container()
     
     st.divider()
 
@@ -389,10 +392,9 @@ with st.sidebar:
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
                 
-                # ZONA HORARIA POR DEFECTO PARA EL FORMULARIO
+                # ZONA HORARIA FORMULARIO
                 tz_form = "Europe/Madrid"
-                if "cfg_zona" in st.session_state:
-                    tz_form = st.session_state.cfg_zona
+                if "cfg_zona" in st.session_state: tz_form = st.session_state.cfg_zona
                 
                 dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(tz_form))), st.time_input("Hora", datetime.now(ZoneInfo(tz_form))))
                 if st.form_submit_button("🔍 Validar y Guardar"):
@@ -410,7 +412,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-    # --- CONFIGURACIÓN AL FINAL DEL SIDEBAR ---
+    # --- CONFIGURACION AL FINAL ---
     st.markdown("---")
     st.header("Configuración")
     mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
@@ -763,14 +765,15 @@ else:
     # --- LOGICA VISTA MOVIL (SESSION STATE) ---
     vista_movil = st.session_state.cfg_movil
     
-    # --- DESCARGA INFORME FISCAL ---
+    # --- DESCARGA INFORME FISCAL (INYECCION PLACEHOLDER V32.28) ---
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
-        st.sidebar.divider()
-        st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
-        try:
-            pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-            st.sidebar.download_button(f"📄 Informe Renta {año_seleccionado}", pdf_fiscal, f"Informe_Fiscal_{año_seleccionado}.pdf", "application/pdf", use_container_width=True)
-        except: pass
+        with tax_container:
+            st.divider()
+            st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
+            try:
+                pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
+                st.download_button(f"📄 Informe Renta {año_seleccionado}", pdf_fiscal, f"Informe_Fiscal_{año_seleccionado}.pdf", "application/pdf", use_container_width=True)
+            except: pass
 
     if tabla:
         st.subheader("📊 Mi Portafolio") 
