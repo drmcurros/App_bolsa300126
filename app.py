@@ -18,20 +18,16 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.27 (Sidebar Clean)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26m (Hotfix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
-# --- ESTADO INICIAL ---
+# --- ESTADO ---
 if "pending_data" not in st.session_state: st.session_state.pending_data = None
 if "adding_mode" not in st.session_state: st.session_state.adding_mode = False
 if "reset_seed" not in st.session_state: st.session_state.reset_seed = 0
 if "ticker_detalle" not in st.session_state: st.session_state.ticker_detalle = None
 if "current_user" not in st.session_state: st.session_state.current_user = None
 if "user_role" not in st.session_state: st.session_state.user_role = "user"
-
-# Inicializar configuración por defecto si no existe
-if "cfg_zona" not in st.session_state: st.session_state.cfg_zona = "Europe/Madrid"
-if "cfg_movil" not in st.session_state: st.session_state.cfg_movil = False
 
 # --- CONEXIÓN AIRTABLE ---
 try:
@@ -351,9 +347,11 @@ if data:
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL (V32.27 NUEVA ESTRUCTURA) ---
+# --- BARRA LATERAL ---
 with st.sidebar:
-    # 1. FILTROS (TOP)
+    st.header("Configuración")
+    mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1)
+    st.divider()
     st.header("Filtros")
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
@@ -361,10 +359,8 @@ with st.sidebar:
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
-    
     st.divider()
 
-    # 2. ACCIONES (MIDDLE)
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
         if button_add := st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
@@ -390,10 +386,7 @@ with st.sidebar:
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
-                # USO DE LA ZONA HORARIA CONFIGURADA EN SESSION STATE
-                tz_user = st.session_state.cfg_zona
-                dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(tz_user))), st.time_input("Hora", datetime.now(ZoneInfo(tz_user))))
-                
+                dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(mi_zona))), st.time_input("Hora", datetime.now(ZoneInfo(mi_zona))))
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         nom, pre, _ = get_stock_data_fmp(ticker)
@@ -408,12 +401,6 @@ with st.sidebar:
             c_si, c_no = st.columns(2)
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
-
-    # 3. CONFIGURACION (BOTTOM)
-    st.markdown("---") 
-    st.header("Configuración")
-    st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
-    st.toggle("📱 Vista Móvil / Tarjetas", key="cfg_movil")
 
 # 3. MOTOR DE CÁLCULO
 cartera = {}
@@ -766,6 +753,7 @@ else:
         except: pass
 
     if tabla:
+        # --- CAMBIO V32.26m ---
         st.subheader("📊 Mi Portafolio") 
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
@@ -816,7 +804,10 @@ else:
     if not df.empty:
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
-        try: with c2: st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
+        try: 
+            with c2: st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: pass
+        
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']
-        if not df.empty: st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
+        if not df.empty:
+            st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
