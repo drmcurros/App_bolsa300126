@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.39 (History FX)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.40 (Tooltips & Fixes)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -332,8 +332,8 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
 
     # Total 2
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(150, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
-    pdf.cell(40, 10, f"{fmt_num_es(total_divs_neto)} EUR", 0, 1, 'R')
+    pdf.cell(160, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
+    pdf.cell(30, 10, f"{fmt_num_es(total_divs_neto)} EUR", 0, 1, 'R')
     
     return pdf.output(dest='S').encode('latin-1')
 
@@ -373,7 +373,6 @@ if data:
             df['Fecha_dt'] = datetime.now()
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-        # Rellenar Cambio si no existe (para registros antiguos)
         if 'Cambio' not in df.columns: df['Cambio'] = 1.0
         df['Cambio'] = pd.to_numeric(df['Cambio'], errors='coerce').fillna(1.0)
 
@@ -407,14 +406,9 @@ if not df.empty:
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         
-        # --- LOGICA V32.39: USAR CAMBIO GUARDADO SI EXISTE ---
-        # Si la operación ya se guardó con el cambio histórico en 'Cantidad', fx = 1.
-        # Pero si el usuario la guardó en USD en versiones antiguas, intentamos usar el cambio actual.
-        # En esta versión, 'Cantidad' YA debería estar en EUR si se guardó correctamente.
         fx = 1.0 
         if mon != "EUR":
              fx = get_exchange_rate_now(mon, MONEDA_BASE)
-        # -----------------------------------------------------
 
         dinero_eur = dinero * fx
         if precio <= 0: precio = 1
@@ -529,14 +523,16 @@ if not df.empty:
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==============================================================================
-# 3. SIDEBAR (RESTO)
+# 3. SIDEBAR (RESTO): IMPUESTOS + BOTONES
 # ==============================================================================
 with st.sidebar:
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
+        
         with st.expander("📝 Datos del Titular (Opcional)", expanded=True):
             nombre_titular = st.text_input("Nombre Completo:", key="tax_name")
             dni_titular = st.text_input("DNI/NIF:", key="tax_dni")
+        
         try:
             st.caption("🔍 Vista Previa de Datos Fiscales (FIFO)")
             df_fiscal = pd.DataFrame(reporte_fiscal_log)
@@ -584,9 +580,9 @@ with st.sidebar:
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total gastado/recibido")
-                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
-                comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total gastado/recibido en la moneda seleccionada")
+                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario de cotización en el momento de la operación.")
+                comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos cobrados por el broker.")
                 st.markdown("---")
                 
                 tz_form = "Europe/Madrid"
@@ -622,7 +618,7 @@ with st.sidebar:
                             "Cantidad": cantidad_final, 
                             "Precio": precio_final, 
                             "Comision": comision_final, 
-                            "Cambio": fx_hist_used, # <--- GUARDAMOS EL CAMBIO
+                            "Cambio": fx_hist_used, 
                             "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
                         }
                         
@@ -806,8 +802,10 @@ if st.session_state.ticker_detalle:
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
+    # --- CÁLCULO PREVIO DE DATOS ---
     tabla = []
     valor_total_cartera = 0.0
+    
     with st.spinner("Conectando con el mercado..."):
         for t, i in cartera.items():
             alive = i['acciones'] > 0.001
@@ -818,15 +816,19 @@ else:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
+                
                 valor_total_cartera += val
+                
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
+    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
     c_hdr_1, c_hdr_2 = st.columns([1, 2])
-    with c_hdr_1: st.title("💼 Cartera") 
+    with c_hdr_1:
+        st.title("💼 Cartera") 
     with c_hdr_2:
         st.markdown(f"""
             <div style="text-align: right; line-height: 4rem;">
@@ -834,14 +836,17 @@ else:
                 <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True)
+    
     st.markdown("---")
 
+    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES + TOOLTIPS) ---
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
-    m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
-    m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
-    m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}")
+    m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%", help="Ganancia Real: (Ventas - Compras) + Dividendos - Comisiones.")
+    m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'), help="Resultado bruto solo de operaciones cerradas (Venta - Compra).")
+    m3.metric("Dividendos", fmt_dinamico(total_div, '€'), help="Suma bruta de los dividendos recibidos.")
+    m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}", help="Gastos totales del broker.")
 
+    # --- GRÁFICO ROI (FIX MANUAL LAYERS) ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -850,18 +855,41 @@ else:
             if not df_r.empty:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
+                
+                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
+                
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
+                
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
                 if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-                elif ymin < 0 < ymax: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=1)]
+                elif ymin < 0 < ymax:
+                    off = abs(ymax)/(ymax-ymin)
+                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
+
                 base = alt.Chart(df_w).encode(x='Fecha:T')
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                st.altair_chart((area + rule_zero), use_container_width=True)
+                
+                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
+                last_d = df_w['Fecha'].max()
+                
+                rule_max = alt.Chart(pd.DataFrame({'y': [s_max]})).mark_rule(color='green', strokeDash=[4,4]).encode(y='y')
+                lbl_max = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_max], 't': [f"Max: {s_max:.1f}%"]})).mark_text(align='left', dx=5, color='green').encode(x='x', y='y', text='t')
+
+                rule_min = alt.Chart(pd.DataFrame({'y': [s_min]})).mark_rule(color='red', strokeDash=[4,4]).encode(y='y')
+                lbl_min = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_min], 't': [f"Min: {s_min:.1f}%"]})).mark_text(align='left', dx=5, color='red').encode(x='x', y='y', text='t')
+
+                rule_avg = alt.Chart(pd.DataFrame({'y': [s_avg]})).mark_rule(color='blue', strokeDash=[4,4]).encode(y='y')
+                lbl_avg = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_avg], 't': [f"Med: {s_avg:.1f}%"]})).mark_text(align='left', dx=5, color='blue').encode(x='x', y='y', text='t')
+                
+                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
+                pts = base.mark_point(opacity=0).add_params(hover)
+                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
+                st.altair_chart((area + rule_zero + rule_max + lbl_max + rule_min + lbl_min + rule_avg + lbl_avg + pts + crs), use_container_width=True)
 
     st.divider()
     
@@ -869,7 +897,9 @@ else:
     vista_movil = st.session_state.cfg_movil
 
     if tabla:
+        # --- CAMBIO V32.26m: NOMBRE SECCION ---
         st.subheader("📊 Mi Portafolio") 
+        
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
             for row in tabla:
@@ -889,6 +919,7 @@ else:
                     if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
+
         else:
             st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
@@ -917,6 +948,7 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
+        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
@@ -924,7 +956,5 @@ else:
                 st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: 
             pass
-        
-        # --- AÑADIDA COLUMNA 'Cambio' AL HISTORIAL VISUAL V32.39 ---
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Cambio']
         if not df.empty: st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
