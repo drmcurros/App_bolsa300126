@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26k (Refined Style)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26m (Final Text)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -100,7 +100,7 @@ def traducir_texto(texto):
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
-# --- FORMATEADOR EUROPEO (3 DECIMALES) ---
+# --- FORMATEADOR EUROPEO ---
 def fmt_dinamico(valor, sufijo="", decimales=3):
     if valor is None: return ""
     s = f"{valor:,.{decimales}f}" 
@@ -287,7 +287,7 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
 
     pdf.set_font("Arial", 'B', 9)
     cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
+    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
 
     pdf.set_font("Arial", '', 9)
@@ -527,7 +527,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # 1. METRICAS ESTILO V32.26k (CLEAN & BOLD)
+    # 1. METRICAS GIGANTES (ESTILO PORTADA V32.26L - FIXED)
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -542,20 +542,20 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    /* Estilo "Pill" similar a V32.26j */
+    /* Estilo "Pill" similar a V32.26j/k */
     .metric-container {
         text-align: left;
         padding: 5px 0;
     }
     .metric-label {
         font-size: 1rem;
-        color: #6b7280; /* Gray-500 */
+        color: #6b7280; 
         margin-bottom: 2px;
     }
     .metric-value {
         font-size: 2.5rem;
-        font-weight: 400; /* V32.26k: Normal weight (sin negrita) */
-        color: #111827; /* Gray-900 (Neutro) */
+        font-weight: 400; 
+        color: #111827; 
         line-height: 1.1;
     }
     .metric-delta-box {
@@ -566,8 +566,8 @@ if st.session_state.ticker_detalle:
         font-weight: 600;
         margin-top: 5px;
     }
-    .delta-pos { background-color: #dcfce7; color: #166534; } /* Verde suave */
-    .delta-neg { background-color: #fee2e2; color: #991b1b; } /* Rojo suave */
+    .delta-pos { background-color: #dcfce7; color: #166534; } 
+    .delta-neg { background-color: #fee2e2; color: #991b1b; } 
     </style>
     """, unsafe_allow_html=True)
 
@@ -764,7 +764,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26k ---
+    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -772,7 +772,7 @@ else:
         st.markdown(f"""
             <div style="text-align: right;">
                 <span style="font-size: 1.1rem; color: gray;">Valor Cartera</span><br>
-                <span style="font-size: 2.2rem; font-weight: bold;">{fmt_dinamico(valor_total_cartera, '€')}</span>
+                <span style="font-size: 4.0rem; font-weight: bold;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True)
     
@@ -852,7 +852,8 @@ else:
         st.sidebar.caption("⚠️ Selecciona un año concreto arriba para descargar el Informe Fiscal.")
 
     if tabla:
-        st.subheader("📊 Mi Portfolio")
+        # --- CORRECCIÓN V32.26L (TEXT FIX) ---
+        st.subheader("📊 Mi Portafolio") 
         
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
