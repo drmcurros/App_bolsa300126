@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.41 (Final Stable)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.41 (Final + Tooltips)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -828,7 +828,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
+    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX + TOOLTIP V32.41) ---
     c_hdr_1, c_hdr_2 = st.columns([1, 2])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -838,18 +838,18 @@ else:
                 <span style="font-size: 1.5rem; color: gray; vertical-align: middle;">Valor Cartera</span>
                 <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
-        """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True, help="Valor actual de mercado de todas tus posiciones vivas. (Precio actual x Acciones).")
     
     _ = st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS (TOOLTIPS V32.41) ---
+    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES + TOOLTIPS) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%", help="Ganancia Real: (Ventas - Compras) + Dividendos - Comisiones.")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'), help="Resultado bruto solo de operaciones cerradas (Venta - Compra).")
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'), help="Suma bruta de los dividendos recibidos.")
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}", help="Gastos totales del broker.")
 
-    # --- GRÁFICO ROI ---
+    # --- GRÁFICO ROI (FIX MANUAL LAYERS) ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -859,6 +859,7 @@ else:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
                 
+                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
                 
