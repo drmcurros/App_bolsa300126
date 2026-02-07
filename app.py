@@ -18,16 +18,20 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.27 (Sidebar Config)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.27 (Hotfix ROI)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
-# --- ESTADO ---
+# --- ESTADO INICIAL ---
 if "pending_data" not in st.session_state: st.session_state.pending_data = None
 if "adding_mode" not in st.session_state: st.session_state.adding_mode = False
 if "reset_seed" not in st.session_state: st.session_state.reset_seed = 0
 if "ticker_detalle" not in st.session_state: st.session_state.ticker_detalle = None
 if "current_user" not in st.session_state: st.session_state.current_user = None
 if "user_role" not in st.session_state: st.session_state.user_role = "user"
+
+# Configuración persistente
+if "cfg_zona" not in st.session_state: st.session_state.cfg_zona = "Europe/Madrid"
+if "cfg_movil" not in st.session_state: st.session_state.cfg_movil = False
 
 # --- CONEXIÓN AIRTABLE ---
 try:
@@ -360,14 +364,14 @@ with st.sidebar:
     st.divider()
 
     if not st.session_state.adding_mode and st.session_state.pending_data is None:
-        if st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
+        if button_add := st.button("➕ Registrar Nueva Operación", use_container_width=True, type="primary"):
             st.session_state.adding_mode = True
             st.session_state.reset_seed = int(datetime.now().timestamp())
             st.rerun()
 
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         st.markdown("### 📝 Datos de la Operación")
-        if st.button("❌ Cerrar", use_container_width=True):
+        if button_close := st.button("❌ Cerrar", use_container_width=True):
             st.session_state.adding_mode = False
             st.session_state.pending_data = None
             st.rerun()
@@ -385,7 +389,7 @@ with st.sidebar:
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
                 
-                # ZONA HORARIA POR DEFECTO PARA EL FORMULARIO (Europa/Madrid si no está definida aún)
+                # ZONA HORARIA POR DEFECTO PARA EL FORMULARIO
                 tz_form = "Europe/Madrid"
                 if "cfg_zona" in st.session_state:
                     tz_form = st.session_state.cfg_zona
@@ -410,7 +414,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("Configuración")
     mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
-    vista_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=False) # Variable local que usaremos abajo
+    vista_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=False, key="cfg_movil")
 
 # 3. MOTOR DE CÁLCULO
 cartera = {}
@@ -737,6 +741,12 @@ else:
             if not df_r.empty:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
+                
+                # --- FIX CRITICO: RESTAURACION DE CUMSUM (V32.27b) ---
+                df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
+                df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
+                # -----------------------------------------------------
+                
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
@@ -750,19 +760,16 @@ else:
 
     st.divider()
     
+    # --- LOGICA VISTA MOVIL (SESSION STATE) ---
+    vista_movil = st.session_state.cfg_movil
+    
     # --- DESCARGA INFORME FISCAL ---
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.sidebar.divider()
         st.sidebar.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
         try:
             pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-            st.sidebar.download_button(
-                f"📄 Informe Renta {año_seleccionado}", 
-                pdf_fiscal, 
-                f"Informe_Fiscal_{año_seleccionado}.pdf", 
-                "application/pdf", 
-                use_container_width=True
-            )
+            st.sidebar.download_button(f"📄 Informe Renta {año_seleccionado}", pdf_fiscal, f"Informe_Fiscal_{año_seleccionado}.pdf", "application/pdf", use_container_width=True)
         except: pass
 
     if tabla:
