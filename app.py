@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.38 (Fiscal Compliance)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.39 (History FX)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -115,36 +115,20 @@ def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- NUEVA FUNCION CRITICA: DIVISA HISTORICA ---
+# --- FUNCION CRITICA: DIVISA HISTORICA ---
 def get_historical_eur_rate(date_obj, from_currency):
-    """
-    Busca el tipo de cambio de cierre de una fecha pasada.
-    Si from_currency es USD, busca el valor de 1 USD en EUR para ese día.
-    """
     if from_currency == "EUR": return 1.0
-    
-    # Simbolo YFinance para "Valor en EUR de 1 unidad de from_currency"
-    # Ejemplo: Si tengo USD y quiero EUR, busco "EUR=X" (que suele ser USD/EUR rate)
-    # Nota: Yahoo finance 'EUR=X' es el valor de 1 Euro en USD? No, 'EUR=X' es 0.92 (1 USD = 0.92 EUR). Correcto.
     ticker = f"{MONEDA_BASE}=X" if from_currency == "USD" else f"{from_currency}{MONEDA_BASE}=X"
-    
-    # Intentamos buscar en un rango de 4 dias por si cae en fin de semana
     start_date = date_obj - timedelta(days=3)
     end_date = date_obj + timedelta(days=1)
-    
     try:
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
         if not data.empty:
-            # Cogemos el dato más cercano a la fecha objetivo (el último disponible en el rango)
             rate = data['Close'].iloc[-1]
-            # Si el valor es un Series/DataFrame (a veces pasa en nuevas versiones de yf), sacamos el float
-            if isinstance(rate, (pd.Series, pd.DataFrame)):
-                rate = float(rate.iloc[0])
+            if isinstance(rate, (pd.Series, pd.DataFrame)): rate = float(rate.iloc[0])
             return float(rate)
-    except:
-        pass
-    
-    return 1.0 # Fallback si falla (debería avisar el usuario)
+    except: pass
+    return 1.0
 
 @st.cache_data(ttl=300, show_spinner=False) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
@@ -218,7 +202,7 @@ def guardar_en_airtable(record):
         record["Usuario"] = st.session_state.current_user
         table_ops.create(record)
         st.toast(f"✅ Operación Guardada: {record['Ticker']}", icon="💾")
-        time.sleep(1) # Breve pausa para leer el toast
+        time.sleep(1) 
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
         st.rerun()
@@ -389,6 +373,9 @@ if data:
             df['Fecha_dt'] = datetime.now()
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        # Rellenar Cambio si no existe (para registros antiguos)
+        if 'Cambio' not in df.columns: df['Cambio'] = 1.0
+        df['Cambio'] = pd.to_numeric(df['Cambio'], errors='coerce').fillna(1.0)
 
 # ==============================================================================
 # 1. SIDEBAR (TOP): FILTROS
@@ -420,14 +407,14 @@ if not df.empty:
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         
-        # --- LOGICA DIVISA IMPORTANTE (V32.38) ---
-        # Si la operación ya viene convertida a EUR (porque se guardó así), fx = 1.
-        # Si no, usamos el cambio actual (para operaciones antiguas mal guardadas).
-        # En el futuro, todas se guardarán como EUR gracias a la corrección del formulario.
+        # --- LOGICA V32.39: USAR CAMBIO GUARDADO SI EXISTE ---
+        # Si la operación ya se guardó con el cambio histórico en 'Cantidad', fx = 1.
+        # Pero si el usuario la guardó en USD en versiones antiguas, intentamos usar el cambio actual.
+        # En esta versión, 'Cantidad' YA debería estar en EUR si se guardó correctamente.
         fx = 1.0 
         if mon != "EUR":
              fx = get_exchange_rate_now(mon, MONEDA_BASE)
-        # ------------------------------------------
+        # -----------------------------------------------------
 
         dinero_eur = dinero * fx
         if precio <= 0: precio = 1
@@ -542,17 +529,21 @@ if not df.empty:
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==============================================================================
-# 3. SIDEBAR (RESTO): IMPUESTOS + BOTONES
+# 3. SIDEBAR (RESTO)
 # ==============================================================================
 with st.sidebar:
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
-        
         with st.expander("📝 Datos del Titular (Opcional)", expanded=True):
             nombre_titular = st.text_input("Nombre Completo:", key="tax_name")
             dni_titular = st.text_input("DNI/NIF:", key="tax_dni")
-        
         try:
+            st.caption("🔍 Vista Previa de Datos Fiscales (FIFO)")
+            df_fiscal = pd.DataFrame(reporte_fiscal_log)
+            if not df_fiscal.empty:
+                cols_view = ['Ticker', 'Fecha Venta', 'Cantidad', 'Rendimiento'] if 'Rendimiento' in df_fiscal.columns else ['Ticker', 'Fecha', 'Neto']
+                st.dataframe(df_fiscal[cols_view], hide_index=True, use_container_width=True, height=150)
+
             pdf_fiscal = generar_informe_fiscal_completo(
                 reporte_fiscal_log, 
                 año_seleccionado, 
@@ -586,16 +577,14 @@ with st.sidebar:
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
                 st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
-                
-                # --- AVISO FISCAL ---
-                st.warning("⚖️ **Nota Fiscal:** Si usas USD, el sistema buscará el cambio del día seleccionado y guardará la operación en **EUR** para fijar el coste histórico.")
+                st.warning("⚖️ **Nota Fiscal:** Si usas USD, el sistema buscará el cambio del día seleccionado y guardará la operación en **EUR**.")
                 
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total gastado/recibido en la moneda seleccionada")
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total gastado/recibido")
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
@@ -611,23 +600,19 @@ with st.sidebar:
                         if not nom: nom, pre, _ = get_stock_data_yahoo(ticker)
                         nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
                         
-                        # --- LOGICA DE CONVERSION HISTORICA V32.38 ---
                         cantidad_final = float(dinero_total)
                         precio_final = float(precio_manual) if precio_manual > 0 else (pre if pre else 0.0)
                         comision_final = float(comision)
                         moneda_guardar = moneda
-                        
-                        # Si es divisa extranjera, CONVERTIMOS YA para congelar el valor historico
+                        fx_hist_used = 1.0
+
                         if moneda != "EUR":
-                            fx_hist = get_historical_eur_rate(dt_final, moneda)
-                            cantidad_final = cantidad_final * fx_hist
-                            # El precio de la accion se puede guardar en divisa original o convertida
-                            # Para simplificar y mantener consistencia, convertimos todo a EUR
-                            precio_final = precio_final * fx_hist
-                            comision_final = comision_final * fx_hist
+                            fx_hist_used = get_historical_eur_rate(dt_final, moneda)
+                            cantidad_final = cantidad_final * fx_hist_used
+                            precio_final = precio_final * fx_hist_used
+                            comision_final = comision_final * fx_hist_used
                             moneda_guardar = "EUR" 
-                            
-                            st.toast(f"💱 Divisa convertida al cambio histórico: {fx_hist:.4f}", icon="ℹ️")
+                            st.toast(f"💱 Divisa convertida al cambio histórico: {fx_hist_used:.4f}", icon="ℹ️")
 
                         datos = {
                             "Tipo": tipo, 
@@ -637,6 +622,7 @@ with st.sidebar:
                             "Cantidad": cantidad_final, 
                             "Precio": precio_final, 
                             "Comision": comision_final, 
+                            "Cambio": fx_hist_used, # <--- GUARDAMOS EL CAMBIO
                             "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
                         }
                         
@@ -938,5 +924,7 @@ else:
                 st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
         except: 
             pass
-        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda']
+        
+        # --- AÑADIDA COLUMNA 'Cambio' AL HISTORIAL VISUAL V32.39 ---
+        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Cambio']
         if not df.empty: st.dataframe(df[cols_display], use_container_width=True, hide_index=True)
