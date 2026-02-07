@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.34 (Linear Architecture)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.35 (Fixed None)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -270,7 +270,14 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
         pdf.cell(18, 8, fmt_dinamico(op['Cantidad']), 1, 0, 'C')
         pdf.cell(30, 8, f"{fmt_num_es(op['V. Transmisión'])}", 1, 0, 'R')
         pdf.cell(30, 8, f"{fmt_num_es(op['V. Adquisición'])}", 1, 0, 'R')
-        pdf.set_text_color(0, 150, 0) if rend >= 0 else pdf.set_text_color(200, 0, 0)
+        
+        # --- FIX V32.35: ELIMINAR TERNARIO QUE PROVOCA 'None' ---
+        if rend >= 0:
+            pdf.set_text_color(0, 150, 0)
+        else:
+            pdf.set_text_color(200, 0, 0)
+        # -------------------------------------------------------
+        
         pdf.cell(30, 8, f"{fmt_num_es(rend)}", 1, 0, 'R')
         pdf.set_text_color(0, 0, 0)
         pdf.ln()
@@ -278,7 +285,8 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
     # Total 1
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(165, 10, "TOTAL GANANCIA/PÉRDIDA PATRIMONIAL:", 0, 0, 'R')
-    pdf.set_text_color(0, 150, 0) if total_ganancias >= 0 else pdf.set_text_color(200, 0, 0)
+    if total_ganancias >= 0: pdf.set_text_color(0, 150, 0)
+    else: pdf.set_text_color(200, 0, 0)
     pdf.cell(35, 10, f"{fmt_num_es(total_ganancias)} EUR", 0, 1, 'R')
     pdf.set_text_color(0, 0, 0)
     pdf.ln(5)
@@ -352,7 +360,7 @@ if data:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
 # ==============================================================================
-# 1. SIDEBAR: PINTAMOS FILTROS (PASO 1)
+# 1. SIDEBAR (TOP): SOLO FILTROS (SE PINTAN AQUÍ PRIMERO)
 # ==============================================================================
 with st.sidebar:
     st.header("Filtros")
@@ -365,7 +373,7 @@ with st.sidebar:
     st.divider()
 
 # ==============================================================================
-# 2. MOTOR DE CÁLCULO (PASO 2: INVISIBLE PERO NECESARIO)
+# 2. MOTOR DE CÁLCULO (EJECUTADO ANTES DE SEGUIR PINTANDO)
 # ==============================================================================
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
@@ -480,10 +488,11 @@ if not df.empty:
         roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
 # ==============================================================================
-# 3. SIDEBAR (PASO 3): PINTAR EL RESTO DE LA BARRA LATERAL
+# 3. SIDEBAR (RESTO): IMPUESTOS + BOTONES + CONFIG
+# (SE EJECUTA AHORA QUE YA TENEMOS LOS CALCULOS HECHOS)
 # ==============================================================================
 with st.sidebar:
-    # A. IMPUESTOS (AHORA YA TENEMOS LOS DATOS CALCULADOS)
+    # A. IMPUESTOS (DIRECTO, SIN PLACEHOLDERS)
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
         try:
@@ -508,7 +517,7 @@ with st.sidebar:
 
     if st.session_state.adding_mode or st.session_state.pending_data is not None:
         st.markdown("### 📝 Datos de la Operación")
-        if st.button("❌ Cerrar", use_container_width=True):
+        if button_close := st.button("❌ Cerrar", use_container_width=True):
             st.session_state.adding_mode = False
             st.session_state.pending_data = None
             st.rerun()
