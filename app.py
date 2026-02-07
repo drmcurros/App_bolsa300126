@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26m (Final Text)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26n (Inline Header)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -287,7 +287,7 @@ def generar_informe_fiscal_completo(datos_fiscales, año):
 
     pdf.set_font("Arial", 'B', 9)
     cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
+    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
 
     pdf.set_font("Arial", '', 9)
@@ -764,15 +764,16 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
-    c_hdr_1, c_hdr_2 = st.columns([3, 1])
+    # --- DISEÑO HEADER PRO V32.26m ---
+    c_hdr_1, c_hdr_2 = st.columns([1, 2]) # CORRECCIÓN V32.26n (Más espacio a la derecha)
     with c_hdr_1:
         st.title("💼 Cartera") 
     with c_hdr_2:
+        # CORRECCIÓN V32.26n (Una sola línea vertical-align)
         st.markdown(f"""
-            <div style="text-align: right;">
-                <span style="font-size: 1.1rem; color: gray;">Valor Cartera</span><br>
-                <span style="font-size: 4.0rem; font-weight: bold;">{fmt_dinamico(valor_total_cartera, '€')}</span>
+            <div style="text-align: right; line-height: 4rem;">
+                <span style="font-size: 1.5rem; color: gray; vertical-align: middle;">Valor Cartera</span>
+                <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True)
     
@@ -852,7 +853,7 @@ else:
         st.sidebar.caption("⚠️ Selecciona un año concreto arriba para descargar el Informe Fiscal.")
 
     if tabla:
-        # --- CORRECCIÓN V32.26L (TEXT FIX) ---
+        # --- CAMBIO V32.26m: NOMBRE SECCION ---
         st.subheader("📊 Mi Portafolio") 
         
         if vista_movil:
