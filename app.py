@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.42 (History Sort)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.43 (Multi-Currency)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -373,6 +373,7 @@ if data:
             df['Fecha_dt'] = datetime.now()
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        # RELLENAR CAMBIO PARA REGISTROS ANTIGUOS
         if 'Cambio' not in df.columns: df['Cambio'] = 1.0
         df['Cambio'] = pd.to_numeric(df['Cambio'], errors='coerce').fillna(1.0)
 
@@ -406,9 +407,19 @@ if not df.empty:
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         
+        # --- LOGICA V32.43: PRIORIDAD AL CAMBIO HISTORICO GUARDADO ---
         fx = 1.0 
+        # Si la operación se guardó en divisa (ej USD), pero tiene Cambio guardado,
+        # usamos ese Cambio para pasar a EUR en el motor de cálculo.
+        # Si no tiene cambio (registro viejo), buscamos el actual como fallback.
+        
+        val_cambio_db = float(row.get('Cambio', 1.0))
         if mon != "EUR":
-             fx = get_exchange_rate_now(mon, MONEDA_BASE)
+             if val_cambio_db != 1.0 and val_cambio_db > 0:
+                 fx = val_cambio_db
+             else:
+                 fx = get_exchange_rate_now(mon, MONEDA_BASE)
+        # -----------------------------------------------------------------
 
         dinero_eur = dinero * fx
         if precio <= 0: precio = 1
@@ -573,7 +584,7 @@ with st.sidebar:
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
                 st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
-                st.warning("⚖️ **Nota Fiscal:** Si usas USD, el sistema buscará el cambio del día seleccionado y guardará la operación en **EUR**.")
+                st.warning("⚖️ **Nota Fiscal:** Si seleccionas USD, se guardará en Dólares, pero el sistema calculará los impuestos en Euros usando el cambio histórico de ese día.")
                 
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
@@ -582,9 +593,9 @@ with st.sidebar:
                 c1, c2 = st.columns(2)
                 
                 # TOOLTIPS V32.41
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total euros gastados/recibidos (incl. comisiones) según tu banco.")
-                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario de cotización en el momento de la operación.")
-                comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos totales cobrados por el broker.")
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total euros/dólares gastados/recibidos (incl. comisiones).")
+                precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario de cotización.")
+                comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos totales del broker.")
                 
                 st.markdown("---")
                 
@@ -602,16 +613,16 @@ with st.sidebar:
                         cantidad_final = float(dinero_total)
                         precio_final = float(precio_manual) if precio_manual > 0 else (pre if pre else 0.0)
                         comision_final = float(comision)
+                        
+                        # --- LOGICA V32.43: GUARDAR EN DIVISA ORIGINAL + CAMBIO ---
                         moneda_guardar = moneda
                         fx_hist_used = 1.0
 
                         if moneda != "EUR":
                             fx_hist_used = get_historical_eur_rate(dt_final, moneda)
-                            cantidad_final = cantidad_final * fx_hist_used
-                            precio_final = precio_final * fx_hist_used
-                            comision_final = comision_final * fx_hist_used
-                            moneda_guardar = "EUR" 
-                            st.toast(f"💱 Divisa convertida al cambio histórico: {fx_hist_used:.4f}", icon="ℹ️")
+                            # NO convertimos los importes, los guardamos en original.
+                            # Guardamos el cambio para que el motor de cálculo lo use luego.
+                            st.toast(f"💱 Cambio histórico detectado: {fx_hist_used:.4f} (Se usará para cálculos fiscales)", icon="ℹ️")
 
                         datos = {
                             "Tipo": tipo, 
@@ -621,7 +632,7 @@ with st.sidebar:
                             "Cantidad": cantidad_final, 
                             "Precio": precio_final, 
                             "Comision": comision_final, 
-                            "Cambio": fx_hist_used, 
+                            "Cambio": fx_hist_used, # <--- CLAVE: Guardamos el cambio
                             "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
                         }
                         
@@ -804,7 +815,6 @@ if st.session_state.ticker_detalle:
         # --- V32.42: SORT DESC + COLS UNIFICADAS ---
         df_m = df_m.sort_values(by='Fecha_dt', ascending=False)
         cols_ver = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
-        # Nos aseguramos de que existan, si no, se crean vacías para evitar error
         for c in cols_ver:
             if c not in df_m.columns: df_m[c] = None
         st.dataframe(df_m[cols_ver], use_container_width=True, hide_index=True)
@@ -867,6 +877,7 @@ else:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
                 
+                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
                 
