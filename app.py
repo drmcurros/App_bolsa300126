@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26g (Big Bold)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26h (Clean Style)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -542,30 +542,44 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    /* FORMATO GIGANTE V32.26g */
-    .big-metric { text-align: center; padding: 10px; margin-bottom: 20px; line-height: 1.1; }
-    .big-label { font-size: 5rem; font-weight: bold; margin-bottom: 0px; } /* Titulos Gigantes en Negrita */
-    .big-value { font-size: 5rem; font-weight: bold; margin: 0; } /* Valores Gigantes en Negrita */
-    .big-delta { font-size: 2.5rem; font-weight: bold; margin-top: 5px; } /* Delta ajustado */
+    /* Estilo "Metric Standard" pero con color */
+    .big-metric { 
+        background-color: transparent; 
+        padding: 5px; 
+        text-align: left; 
+    }
+    .big-label { 
+        font-size: 0.9rem; 
+        color: gray; 
+        font-weight: 700; 
+        margin-bottom: 0px; 
+    }
+    .big-value { 
+        font-size: 2.2rem; 
+        font-weight: 700; 
+        margin: 0; 
+        line-height: 1.2;
+    }
+    .big-delta { 
+        font-size: 1rem; 
+        font-weight: 500; 
+        margin-top: 0px; 
+    }
     </style>
     """, unsafe_allow_html=True)
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        # Precio: Siempre positivo -> Verde
         st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value" style="color:#00C805">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
     with m2:
-        # Acciones: Siempre positivo -> Verde
         st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value" style="color:#00C805">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
     with m3:
-        # Valor: Siempre positivo -> Verde (Delta varia)
-        color_delta = "#00C805" if rent >= 0 else "#FF0000"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value" style="color:#00C805">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color_delta}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
+        color = "#00C805" if rent >= 0 else "#FF0000"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value" style="color:#00C805">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
     with m4:
-        # Trading: Variable -> Color logico
         trad = info.get('pnl_cerrado', 0)
-        color_trad = "#00C805" if trad >= 0 else "#FF0000"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value" style="color:{color_trad}">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
+        color = "#00C805" if trad >= 0 else "#FF0000"
+        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value" style="color:{color}">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -619,7 +633,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # COLORES VERDE/ROJO
+        # CONDICIONAL COLOR PARA OHLC
         cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
 
         if type_g == "Línea":
@@ -721,7 +735,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26e ---
+    # --- DISEÑO HEADER PRO V32.26h ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -860,6 +874,7 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
+        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
