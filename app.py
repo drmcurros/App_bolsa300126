@@ -5,7 +5,7 @@ import requests
 import altair as alt
 import numpy as np 
 from pyairtable import Api
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fpdf import FPDF
 import time
@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.36 (PDF Pro)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.38 (Fiscal Compliance)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -29,7 +29,6 @@ if "ticker_detalle" not in st.session_state: st.session_state.ticker_detalle = N
 if "current_user" not in st.session_state: st.session_state.current_user = None
 if "user_role" not in st.session_state: st.session_state.user_role = "user"
 
-# Configuración persistente
 if "cfg_zona" not in st.session_state: st.session_state.cfg_zona = "Europe/Madrid"
 if "cfg_movil" not in st.session_state: st.session_state.cfg_movil = False
 
@@ -104,7 +103,6 @@ def traducir_texto(texto):
     try: return GoogleTranslator(source='auto', target='es').translate(texto[:4999])
     except: return texto
 
-# --- FORMATEADOR EUROPEO ---
 def fmt_dinamico(valor, sufijo="", decimales=3):
     if valor is None: return ""
     s = f"{valor:,.{decimales}f}" 
@@ -116,6 +114,37 @@ def fmt_dinamico(valor, sufijo="", decimales=3):
 def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+# --- NUEVA FUNCION CRITICA: DIVISA HISTORICA ---
+def get_historical_eur_rate(date_obj, from_currency):
+    """
+    Busca el tipo de cambio de cierre de una fecha pasada.
+    Si from_currency es USD, busca el valor de 1 USD en EUR para ese día.
+    """
+    if from_currency == "EUR": return 1.0
+    
+    # Simbolo YFinance para "Valor en EUR de 1 unidad de from_currency"
+    # Ejemplo: Si tengo USD y quiero EUR, busco "EUR=X" (que suele ser USD/EUR rate)
+    # Nota: Yahoo finance 'EUR=X' es el valor de 1 Euro en USD? No, 'EUR=X' es 0.92 (1 USD = 0.92 EUR). Correcto.
+    ticker = f"{MONEDA_BASE}=X" if from_currency == "USD" else f"{from_currency}{MONEDA_BASE}=X"
+    
+    # Intentamos buscar en un rango de 4 dias por si cae en fin de semana
+    start_date = date_obj - timedelta(days=3)
+    end_date = date_obj + timedelta(days=1)
+    
+    try:
+        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        if not data.empty:
+            # Cogemos el dato más cercano a la fecha objetivo (el último disponible en el rango)
+            rate = data['Close'].iloc[-1]
+            # Si el valor es un Series/DataFrame (a veces pasa en nuevas versiones de yf), sacamos el float
+            if isinstance(rate, (pd.Series, pd.DataFrame)):
+                rate = float(rate.iloc[0])
+            return float(rate)
+    except:
+        pass
+    
+    return 1.0 # Fallback si falla (debería avisar el usuario)
 
 @st.cache_data(ttl=300, show_spinner=False) 
 def get_exchange_rate_now(from_curr, to_curr="EUR"):
@@ -188,7 +217,8 @@ def guardar_en_airtable(record):
     try:
         record["Usuario"] = st.session_state.current_user
         table_ops.create(record)
-        st.success(f"✅ Operación Guardada: {record['Ticker']}")
+        st.toast(f"✅ Operación Guardada: {record['Ticker']}", icon="💾")
+        time.sleep(1) # Breve pausa para leer el toast
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
         st.rerun()
@@ -254,22 +284,8 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
     pdf.ln(2)
 
     pdf.set_font("Arial", 'B', 8)
-    # Nueva estructura de columnas con EMPRESA
-    cols = [
-        ("Ticker", 15), 
-        ("Empresa", 35), # Nueva columna
-        ("ISIN", 25), 
-        ("F. Venta", 20), 
-        ("F. Compra", 20), 
-        ("Cant.", 15), 
-        ("V. Transm.", 25), 
-        ("V. Adquis.", 25), 
-        ("Rendimiento", 25)
-    ]
-    
-    # Cabecera Tabla
-    for txt, w in cols: 
-        pdf.cell(w, 8, txt, 1, 0, 'C')
+    cols = [("Ticker", 15), ("Empresa", 35), ("ISIN", 25), ("F. Venta", 20), ("F. Compra", 20), ("Cant.", 15), ("V. Transm.", 25), ("V. Adquis.", 25), ("Rendimiento", 25)]
+    for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
     
     pdf.set_font("Arial", '', 8)
@@ -279,12 +295,10 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
     for op in ops_acciones:
         rend = op['Rendimiento']
         total_ganancias += rend
-        
-        # Recortar nombre empresa si es muy largo
         empresa_txt = str(op.get('Empresa', ''))[:18]
 
         pdf.cell(15, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(35, 8, empresa_txt, 1, 0, 'L') # Alineado izquierda
+        pdf.cell(35, 8, empresa_txt, 1, 0, 'L')
         pdf.cell(25, 8, str(op.get('ISIN', '')), 1, 0, 'C') 
         pdf.cell(20, 8, str(op['Fecha Venta']), 1, 0, 'C')
         pdf.cell(20, 8, str(op['Fecha Compra']), 1, 0, 'C')
@@ -292,11 +306,8 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
         pdf.cell(25, 8, f"{fmt_num_es(op['V. Transmisión'])}", 1, 0, 'R')
         pdf.cell(25, 8, f"{fmt_num_es(op['V. Adquisición'])}", 1, 0, 'R')
         
-        # Color condicional
-        if rend >= 0:
-            pdf.set_text_color(0, 150, 0)
-        else:
-            pdf.set_text_color(200, 0, 0)
+        if rend >= 0: pdf.set_text_color(0, 150, 0)
+        else: pdf.set_text_color(200, 0, 0)
         
         pdf.cell(25, 8, f"{fmt_num_es(rend)}", 1, 0, 'R')
         pdf.set_text_color(0, 0, 0)
@@ -317,31 +328,28 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
     pdf.cell(0, 10, "2. Rendimientos del Capital Mobiliario (Dividendos)", 1, 1, 'L', 1)
     pdf.ln(2)
 
-    pdf.set_font("Arial", 'B', 8)
-    cols_div = [("Ticker", 25), ("Empresa", 45), ("Fecha Cobro", 30), ("Importe Bruto", 30), ("Gastos Ded.", 30), ("Importe Neto", 30)]
+    pdf.set_font("Arial", 'B', 9)
+    cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
     for txt, w in cols_div: pdf.cell(w, 8, txt, 1, 0, 'C')
     pdf.ln()
 
-    pdf.set_font("Arial", '', 8)
+    pdf.set_font("Arial", '', 9)
     total_divs_neto = 0.0
     ops_divs = [d for d in datos_fiscales if d['Tipo'] == "Dividendo"]
 
     for op in ops_divs:
         total_divs_neto += op['Neto']
-        empresa_txt = str(op.get('Empresa', ''))[:25]
-
-        pdf.cell(25, 8, str(op['Ticker']), 1, 0, 'C')
-        pdf.cell(45, 8, empresa_txt, 1, 0, 'L')
-        pdf.cell(30, 8, str(op['Fecha']), 1, 0, 'C')
-        pdf.cell(30, 8, f"{fmt_num_es(op['Bruto'])}", 1, 0, 'R')
-        pdf.cell(30, 8, f"{fmt_num_es(op['Gastos'])}", 1, 0, 'R')
-        pdf.cell(30, 8, f"{fmt_num_es(op['Neto'])}", 1, 0, 'R')
+        pdf.cell(30, 8, str(op['Ticker']), 1, 0, 'C')
+        pdf.cell(40, 8, str(op['Fecha']), 1, 0, 'C')
+        pdf.cell(40, 8, f"{fmt_num_es(op['Bruto'])}", 1, 0, 'R')
+        pdf.cell(40, 8, f"{fmt_num_es(op['Gastos'])}", 1, 0, 'R')
+        pdf.cell(40, 8, f"{fmt_num_es(op['Neto'])}", 1, 0, 'R')
         pdf.ln()
 
     # Total 2
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(160, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
-    pdf.cell(30, 10, f"{fmt_num_es(total_divs_neto)} EUR", 0, 1, 'R')
+    pdf.cell(150, 10, "TOTAL RENDIMIENTOS (NETO):", 0, 0, 'R')
+    pdf.cell(40, 10, f"{fmt_num_es(total_divs_neto)} EUR", 0, 1, 'R')
     
     return pdf.output(dest='S').encode('latin-1')
 
@@ -412,7 +420,15 @@ if not df.empty:
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
         mon, comi = row.get('Moneda', 'EUR'), float(row.get('Comision', 0))
         
-        fx = get_exchange_rate_now(mon, MONEDA_BASE)
+        # --- LOGICA DIVISA IMPORTANTE (V32.38) ---
+        # Si la operación ya viene convertida a EUR (porque se guardó así), fx = 1.
+        # Si no, usamos el cambio actual (para operaciones antiguas mal guardadas).
+        # En el futuro, todas se guardarán como EUR gracias a la corrección del formulario.
+        fx = 1.0 
+        if mon != "EUR":
+             fx = get_exchange_rate_now(mon, MONEDA_BASE)
+        # ------------------------------------------
+
         dinero_eur = dinero * fx
         if precio <= 0: precio = 1
         
@@ -428,7 +444,6 @@ if not df.empty:
 
         if tick not in cartera:
             colas_fifo[tick] = [] 
-            # --- GUARDAMOS LA DESCRIPCION DE AIRTABLE O LA INICIALIZAMOS ---
             desc_ini = row.get('Descripcion', tick)
             cartera[tick] = {'acciones': 0.0, 'coste_total_eur': 0.0, 'desc': desc_ini, 'pnl_cerrado': 0.0, 'pmc': 0.0, 'moneda_origen': mon, 'movimientos': [], 'lotes': colas_fifo[tick]}
         
@@ -474,14 +489,12 @@ if not df.empty:
                     v_adquisicion = cantidad_consumida * lote['coste_por_accion_eur']
                     v_transmision = cantidad_consumida * precio_venta_neto_unitario
                     rendimiento = v_transmision - v_adquisicion
-                    
-                    # --- AÑADIR EMPRESA AL REGISTRO FISCAL ---
                     nombre_empresa = cartera[tick]['desc']
                     
                     reporte_fiscal_log.append({
                         "Tipo": "Ganancia/Pérdida", 
                         "Ticker": tick, 
-                        "Empresa": nombre_empresa, # <--- NUEVO
+                        "Empresa": nombre_empresa,
                         "ISIN": isin_actual, 
                         "Fecha Venta": row.get('Fecha_str', '').split(' ')[0], 
                         "Fecha Compra": lote['fecha_str'], 
@@ -519,7 +532,7 @@ if not df.empty:
                 reporte_fiscal_log.append({
                     "Tipo": "Dividendo",
                     "Ticker": tick,
-                    "Empresa": nombre_empresa, # <--- NUEVO
+                    "Empresa": nombre_empresa,
                     "Fecha": row.get('Fecha_str', '').split(' ')[0],
                     "Bruto": dinero_eur,
                     "Gastos": comi * fx,
@@ -535,7 +548,6 @@ with st.sidebar:
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
         
-        # --- INPUTS DATOS PERSONALES ---
         with st.expander("📝 Datos del Titular (Opcional)", expanded=True):
             nombre_titular = st.text_input("Nombre Completo:", key="tax_name")
             dni_titular = st.text_input("DNI/NIF:", key="tax_dni")
@@ -548,7 +560,7 @@ with st.sidebar:
                 dni_titular if dni_titular else "______________________"
             )
             st.download_button(
-                label=f"📄 Informe Renta {año_seleccionado}", 
+                label=f"📄 Descargar Informe {año_seleccionado}", 
                 data=pdf_fiscal, 
                 file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
                 mime="application/pdf", 
@@ -574,12 +586,16 @@ with st.sidebar:
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
                 st.info("💡 Consejo: Para vender todo, usa el 'Valor Actual' de la tabla.")
+                
+                # --- AVISO FISCAL ---
+                st.warning("⚖️ **Nota Fiscal:** Si usas USD, el sistema buscará el cambio del día seleccionado y guardará la operación en **EUR** para fijar el coste histórico.")
+                
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
                 desc_manual = st.text_input("Descripción (Opcional)")
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0)
+                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="Total gastado/recibido en la moneda seleccionada")
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
@@ -588,15 +604,43 @@ with st.sidebar:
                 if "cfg_zona" in st.session_state: tz_form = st.session_state.cfg_zona
                 
                 dt_final = datetime.combine(st.date_input("Día", datetime.now(ZoneInfo(tz_form))), st.time_input("Hora", datetime.now(ZoneInfo(tz_form))))
+                
                 if st.form_submit_button("🔍 Validar y Guardar"):
                     if ticker and dinero_total > 0:
                         nom, pre, _ = get_stock_data_fmp(ticker)
                         if not nom: nom, pre, _ = get_stock_data_yahoo(ticker)
                         nombre_final = desc_manual if desc_manual else (nom if nom else ticker)
-                        precio_final = precio_manual if precio_manual > 0 else (pre if pre else 0.0)
-                        datos = {"Tipo": tipo, "Ticker": ticker, "Descripcion": nombre_final, "Moneda": moneda, "Cantidad": float(dinero_total), "Precio": float(precio_final), "Comision": float(comision), "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")}
-                        if precio_final > 0: guardar_en_airtable(datos)
-                        else: st.session_state.pending_data = datos; st.rerun()
+                        
+                        # --- LOGICA DE CONVERSION HISTORICA V32.38 ---
+                        cantidad_final = float(dinero_total)
+                        precio_final = float(precio_manual) if precio_manual > 0 else (pre if pre else 0.0)
+                        comision_final = float(comision)
+                        moneda_guardar = moneda
+                        
+                        # Si es divisa extranjera, CONVERTIMOS YA para congelar el valor historico
+                        if moneda != "EUR":
+                            fx_hist = get_historical_eur_rate(dt_final, moneda)
+                            cantidad_final = cantidad_final * fx_hist
+                            # El precio de la accion se puede guardar en divisa original o convertida
+                            # Para simplificar y mantener consistencia, convertimos todo a EUR
+                            precio_final = precio_final * fx_hist
+                            comision_final = comision_final * fx_hist
+                            moneda_guardar = "EUR" 
+                            
+                            st.toast(f"💱 Divisa convertida al cambio histórico: {fx_hist:.4f}", icon="ℹ️")
+
+                        datos = {
+                            "Tipo": tipo, 
+                            "Ticker": ticker, 
+                            "Descripcion": nombre_final, 
+                            "Moneda": moneda_guardar, 
+                            "Cantidad": cantidad_final, 
+                            "Precio": precio_final, 
+                            "Comision": comision_final, 
+                            "Fecha": dt_final.strftime("%Y/%m/%d %H:%M")
+                        }
+                        
+                        guardar_en_airtable(datos)
         else:
             st.warning(f"⚠️ **ALERTA:** No encuentro precio para **'{st.session_state.pending_data['Ticker']}'**.")
             c_si, c_no = st.columns(2)
@@ -776,10 +820,8 @@ if st.session_state.ticker_detalle:
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
-    # --- CÁLCULO PREVIO DE DATOS ---
     tabla = []
     valor_total_cartera = 0.0
-    
     with st.spinner("Conectando con el mercado..."):
         for t, i in cartera.items():
             alive = i['acciones'] > 0.001
@@ -790,19 +832,15 @@ else:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
-                
                 valor_total_cartera += val
-                
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
     c_hdr_1, c_hdr_2 = st.columns([1, 2])
-    with c_hdr_1:
-        st.title("💼 Cartera") 
+    with c_hdr_1: st.title("💼 Cartera") 
     with c_hdr_2:
         st.markdown(f"""
             <div style="text-align: right; line-height: 4rem;">
@@ -810,17 +848,14 @@ else:
                 <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True)
-    
     st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}")
 
-    # --- GRÁFICO ROI (FIX MANUAL LAYERS) ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -829,41 +864,18 @@ else:
             if not df_r.empty:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
-                
-                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-                
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
-                
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
                 if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-                elif ymin < 0 < ymax:
-                    off = abs(ymax)/(ymax-ymin)
-                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
-
+                elif ymin < 0 < ymax: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=1)]
                 base = alt.Chart(df_w).encode(x='Fecha:T')
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                
-                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
-                last_d = df_w['Fecha'].max()
-                
-                rule_max = alt.Chart(pd.DataFrame({'y': [s_max]})).mark_rule(color='green', strokeDash=[4,4]).encode(y='y')
-                lbl_max = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_max], 't': [f"Max: {s_max:.1f}%"]})).mark_text(align='left', dx=5, color='green').encode(x='x', y='y', text='t')
-
-                rule_min = alt.Chart(pd.DataFrame({'y': [s_min]})).mark_rule(color='red', strokeDash=[4,4]).encode(y='y')
-                lbl_min = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_min], 't': [f"Min: {s_min:.1f}%"]})).mark_text(align='left', dx=5, color='red').encode(x='x', y='y', text='t')
-
-                rule_avg = alt.Chart(pd.DataFrame({'y': [s_avg]})).mark_rule(color='blue', strokeDash=[4,4]).encode(y='y')
-                lbl_avg = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_avg], 't': [f"Med: {s_avg:.1f}%"]})).mark_text(align='left', dx=5, color='blue').encode(x='x', y='y', text='t')
-                
-                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
-                pts = base.mark_point(opacity=0).add_params(hover)
-                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
-                st.altair_chart((area + rule_zero + rule_max + lbl_max + rule_min + lbl_min + rule_avg + lbl_avg + pts + crs), use_container_width=True)
+                st.altair_chart((area + rule_zero), use_container_width=True)
 
     st.divider()
     
@@ -871,9 +883,7 @@ else:
     vista_movil = st.session_state.cfg_movil
 
     if tabla:
-        # --- CAMBIO V32.26m: NOMBRE SECCION ---
         st.subheader("📊 Mi Portafolio") 
-        
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
             for row in tabla:
@@ -893,7 +903,6 @@ else:
                     if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
-
         else:
             st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
@@ -922,7 +931,6 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
-        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
