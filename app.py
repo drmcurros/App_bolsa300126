@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.26i (Estilo Portada)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.26j (Pro UI)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -527,7 +527,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
-    # 1. METRICAS GIGANTES (ESTILO PORTADA)
+    # 1. METRICAS GIGANTES (ESTILO PORTADA V32.26j)
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -542,48 +542,73 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    /* Estilo Portada V32.26i */
-    .big-metric { 
-        background-color: transparent; 
-        padding: 10px; 
-        text-align: left; 
+    /* Estilo "Pill" para el porcentaje */
+    .metric-container {
+        text-align: left;
+        padding: 5px 0;
     }
-    .big-label { 
-        font-size: 1.1rem; 
-        color: #555; /* Gris oscuro como la portada */
-        font-weight: 600; 
-        margin-bottom: 5px; 
+    .metric-label {
+        font-size: 1rem;
+        color: #6b7280; /* Gray-500 */
+        margin-bottom: 2px;
     }
-    .big-value { 
-        font-size: 2.8rem; /* Tamaño grande como la portada */
-        font-weight: 800; /* Negrita fuerte */
-        margin: 0; 
-        line-height: 1.2;
-        color: #000; /* Color neutro forzado */
+    .metric-value {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #111827; /* Gray-900 (Neutro) */
+        line-height: 1.1;
     }
-    .big-delta { 
-        font-size: 1.2rem; 
-        font-weight: 600; 
-        margin-top: 5px; 
+    .metric-delta-box {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-top: 5px;
     }
+    .delta-pos { background-color: #dcfce7; color: #166534; } /* Verde suave */
+    .delta-neg { background-color: #fee2e2; color: #991b1b; } /* Rojo suave */
     </style>
     """, unsafe_allow_html=True)
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        # Precio: Neutro
-        st.markdown(f'<div class="big-metric"><p class="big-label">Precio</p><p class="big-value">{now:,.2f} {info.get("moneda_origen","")}</p></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Precio</div>
+            <div class="metric-value">{now:,.2f} {info.get("moneda_origen","")}</div>
+        </div>
+        ''', unsafe_allow_html=True)
+    
     with m2:
-        # Acciones: Neutro
-        st.markdown(f'<div class="big-metric"><p class="big-label">Acciones</p><p class="big-value">{fmt_dinamico(acc)}</p></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Acciones</div>
+            <div class="metric-value">{fmt_dinamico(acc)}</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        
     with m3:
-        # Valor: Neutro + Delta con Color
-        color_delta = "#00C805" if rent >= 0 else "#FF0000"
-        st.markdown(f'<div class="big-metric"><p class="big-label">Valor Actual</p><p class="big-value">{fmt_dinamico(valor_mercado_eur, "€")}</p><p class="big-delta" style="color:{color_delta}">{fmt_num_es(rent*100)}%</p></div>', unsafe_allow_html=True)
+        # Lógica para el "Pill" de porcentaje
+        rent_pct = rent * 100
+        delta_class = "delta-pos" if rent >= 0 else "delta-neg"
+        symbol = "↑" if rent >= 0 else "↓"
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Valor Actual</div>
+            <div class="metric-value">{fmt_dinamico(valor_mercado_eur, "€")}</div>
+            <div class="metric-delta-box {delta_class}">{symbol} {fmt_num_es(rent_pct)}%</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        
     with m4:
-        # Trading: Neutro
         trad = info.get('pnl_cerrado', 0)
-        st.markdown(f'<div class="big-metric"><p class="big-label">Trading (Cerrado)</p><p class="big-value">{fmt_dinamico(trad, "€")}</p></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Trading (Cerrado)</div>
+            <div class="metric-value">{fmt_dinamico(trad, "€")}</div>
+        </div>
+        ''', unsafe_allow_html=True)
 
     st.divider()
 
@@ -637,7 +662,7 @@ if st.session_state.ticker_detalle:
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
         
-        # COLORES VERDE/ROJO
+        # CONDICIONAL COLOR PARA OHLC
         cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
 
         if type_g == "Línea":
@@ -739,7 +764,7 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
-    # --- DISEÑO HEADER PRO V32.26i ---
+    # --- DISEÑO HEADER PRO V32.26j ---
     c_hdr_1, c_hdr_2 = st.columns([3, 1])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -878,6 +903,7 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
+        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
