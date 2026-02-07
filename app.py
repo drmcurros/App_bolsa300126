@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.28 (Layout Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.29 (Sidebar Layout)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -351,7 +351,7 @@ if data:
         for col in ["Cantidad", "Precio", "Comision"]:
             if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-# --- BARRA LATERAL (V32.28: PLACEHOLDER IMPUESTOS) ---
+# --- BARRA LATERAL (V32.29 ESTRUCTURA DEFINITIVA) ---
 with st.sidebar:
     st.header("Filtros")
     lista_años = ["Todos los años"]
@@ -361,7 +361,7 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
     
-    # === AQUI RESERVAMOS EL ESPACIO PARA IMPUESTOS (AUNQUE SE CALCULE LUEGO) ===
+    # RESERVA ESPACIO PARA IMPUESTOS (JUSTO DEBAJO DE FILTROS)
     tax_container = st.container()
     
     st.divider()
@@ -392,7 +392,6 @@ with st.sidebar:
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f")
                 st.markdown("---")
                 
-                # ZONA HORARIA FORMULARIO
                 tz_form = "Europe/Madrid"
                 if "cfg_zona" in st.session_state: tz_form = st.session_state.cfg_zona
                 
@@ -412,7 +411,7 @@ with st.sidebar:
             if c_si.button("✅ Guardar"): guardar_en_airtable(st.session_state.pending_data)
             if c_no.button("❌ Revisar"): st.session_state.pending_data = None; st.rerun()
 
-    # --- CONFIGURACION AL FINAL ---
+    # --- CONFIGURACION AL FINAL (CONFIG + MOVIL) ---
     st.markdown("---")
     st.header("Configuración")
     mi_zona = st.selectbox("🌍 Zona Horaria:", ["Atlantic/Canary", "Europe/Madrid", "UTC"], index=1, key="cfg_zona")
@@ -543,6 +542,7 @@ if st.session_state.ticker_detalle:
     with c1: st.image(get_logo_url(t), width=80)
     with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
 
+    # 1. METRICAS GIGANTES (ESTILO PORTADA V32.26L - FIXED)
     acc = info.get('acciones', 0)
     with st.spinner("Cargando..."):
         nom, now, desc = get_stock_data_fmp(t)
@@ -557,10 +557,30 @@ if st.session_state.ticker_detalle:
 
     st.markdown("""
     <style>
-    .metric-container { text-align: left; padding: 5px 0; }
-    .metric-label { font-size: 1rem; color: #6b7280; margin-bottom: 2px; }
-    .metric-value { font-size: 2.5rem; font-weight: 400; color: #111827; line-height: 1.1; }
-    .metric-delta-box { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.9rem; font-weight: 600; margin-top: 5px; }
+    /* Estilo "Pill" similar a V32.26j/k */
+    .metric-container {
+        text-align: left;
+        padding: 5px 0;
+    }
+    .metric-label {
+        font-size: 1rem;
+        color: #6b7280; 
+        margin-bottom: 2px;
+    }
+    .metric-value {
+        font-size: 2.5rem;
+        font-weight: 400; 
+        color: #111827; 
+        line-height: 1.1;
+    }
+    .metric-delta-box {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-top: 5px;
+    }
     .delta-pos { background-color: #dcfce7; color: #166534; } 
     .delta-neg { background-color: #fee2e2; color: #991b1b; } 
     </style>
@@ -569,27 +589,55 @@ if st.session_state.ticker_detalle:
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         mon_symbol = "€" if info.get("moneda_origen") == "EUR" else info.get("moneda_origen","")
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Precio</div><div class="metric-value">{fmt_dinamico(now, mon_symbol, 2)}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Precio</div>
+            <div class="metric-value">{fmt_dinamico(now, mon_symbol, 2)}</div>
+        </div>
+        ''', unsafe_allow_html=True)
+    
     with m2:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Acciones</div><div class="metric-value">{fmt_dinamico(acc)}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Acciones</div>
+            <div class="metric-value">{fmt_dinamico(acc)}</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        
     with m3:
         rent_pct = rent * 100
         delta_class = "delta-pos" if rent >= 0 else "delta-neg"
         symbol = "↑" if rent >= 0 else "↓"
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Valor Actual</div><div class="metric-value">{fmt_dinamico(valor_mercado_eur, "€")}</div><div class="metric-delta-box {delta_class}">{symbol} {fmt_num_es(rent_pct)}%</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Valor Actual</div>
+            <div class="metric-value">{fmt_dinamico(valor_mercado_eur, "€")}</div>
+            <div class="metric-delta-box {delta_class}">{symbol} {fmt_num_es(rent_pct)}%</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        
     with m4:
         trad = info.get('pnl_cerrado', 0)
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Trading (Cerrado)</div><div class="metric-value">{fmt_dinamico(trad, "€")}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="metric-container">
+            <div class="metric-label">Trading (Cerrado)</div>
+            <div class="metric-value">{fmt_dinamico(trad, "€")}</div>
+        </div>
+        ''', unsafe_allow_html=True)
 
     st.divider()
 
+    # 2. BARRA DE CONTROL
     c_tools = st.columns([2, 1, 3])
+    
     with c_tools[0]:
         label_t = st.select_slider("Periodo", options=["1 Sem", "1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año", label_visibility="collapsed")
         periodo_map = {"1 Sem": "5d", "1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
         width_map = {"1 Sem": 20, "1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
+
     with c_tools[1]:
         type_g = st.radio("Estilo", ["Línea", "Velas", "Barras (OHLC)"], horizontal=True, label_visibility="collapsed")
+
     with c_tools[2]:
         cols_chk = st.columns(4)
         i_vol = cols_chk[0].checkbox("Volumen", value=False)
@@ -602,9 +650,11 @@ if st.session_state.ticker_detalle:
     if i_sma: inds.append("SMA")
     if i_sup: inds.append("Soportes")
     if i_ten: inds.append("Tendencia")
+    
     sma_p = 50
     if i_sma: sma_p = c_tools[2].selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3, label_visibility="collapsed")
 
+    # GRAFICO
     hist = pd.DataFrame()
     try:
         hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
@@ -626,6 +676,8 @@ if st.session_state.ticker_detalle:
 
         hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
         base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
+        
+        # CONDICIONAL COLOR PARA OHLC
         cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
 
         if type_g == "Línea":
@@ -650,6 +702,7 @@ if st.session_state.ticker_detalle:
             stats_layers.append(alt.Chart(pd.DataFrame({'x':[r['Date']], 'y':[r['Val']], 't':[r['Label']]})).mark_text(color=r['Color'], align='left', dx=5).encode(x='x', y='y', text='t'))
 
         layers = [main, points, rule_hover] + stats_layers
+        
         movs_raw = info.get('movimientos', [])
         if movs_raw:
             df_m_chart = pd.DataFrame(movs_raw)
@@ -665,11 +718,14 @@ if st.session_state.ticker_detalle:
         if i_ten and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
 
         chart_final = alt.layer(*layers).properties(height=400, width='container')
+        
         if i_vol:
             vol_chart = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=cond_color).properties(height=100).add_params(hover)
             chart_final = alt.vconcat(chart_final, vol_chart).resolve_scale(x='shared')
+
         st.altair_chart(chart_final, use_container_width=True)
 
+    # 3. TABLA FIFO
     lotes = info.get('lotes', [])
     if lotes and now:
         st.subheader("📦 Desglose de Lotes Activos (FIFO)")
@@ -689,6 +745,7 @@ if st.session_state.ticker_detalle:
                 return [f'background-color: {color}; color: black']*len(row)
             st.dataframe(df_lotes.style.format({"Acciones": lambda x: fmt_dinamico(x), "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €", "Coste Lote": lambda x: fmt_num_es(x) + " €", "Valor Hoy": lambda x: fmt_num_es(x) + " €", "Plusvalía": lambda x: fmt_num_es(x) + " €", "% Rent.": lambda x: fmt_num_es(x) + "%"}).apply(estilo_lotes, axis=1), use_container_width=True, hide_index=True)
 
+    # 4. DESCRIPCION E HISTORIAL
     with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
     st.subheader("📝 Movimientos Históricos")
     if info['movimientos']:
@@ -699,8 +756,10 @@ if st.session_state.ticker_detalle:
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
+    # --- CÁLCULO PREVIO DE DATOS ---
     tabla = []
     valor_total_cartera = 0.0
+    
     with st.spinner("Conectando con el mercado..."):
         for t, i in cartera.items():
             alive = i['acciones'] > 0.001
@@ -711,15 +770,19 @@ else:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 val = i['acciones'] * p_now if p_now else 0
+                
                 valor_total_cartera += val
+                
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
                 tabla.append({"Logo": get_logo_url(t), "Empresa": i['desc'], "Ticker": t, "Acciones": i['acciones'], "Valor": val, "PMC": i['pmc'], "Invertido": i['coste_total_eur'], "Trading": i['pnl_cerrado'], "Latente": r_lat})
 
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
 
+    # --- DISEÑO HEADER PRO V32.26L (BIGGER + TEXT FIX) ---
     c_hdr_1, c_hdr_2 = st.columns([1, 2])
-    with c_hdr_1: st.title("💼 Cartera") 
+    with c_hdr_1:
+        st.title("💼 Cartera") 
     with c_hdr_2:
         st.markdown(f"""
             <div style="text-align: right; line-height: 4rem;">
@@ -727,14 +790,17 @@ else:
                 <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True)
+    
     st.markdown("---")
 
+    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES) ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}")
 
+    # --- GRÁFICO ROI (FIX MANUAL LAYERS + RESTORED CUMSUM) ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -744,38 +810,65 @@ else:
                 df_r.set_index('Fecha', inplace=True)
                 df_w = df_r.resample('W').sum().fillna(0)
                 
-                # --- FIX CRITICO: RESTAURACION DE CUMSUM (V32.27b) ---
+                # RE-FIX CUMSUM
                 df_w['Cum_P'] = df_w['Delta_Profit'].cumsum()
                 df_w['Cum_I'] = df_w['Delta_Invest'].cumsum()
-                # -----------------------------------------------------
                 
                 df_w['ROI'] = df_w.apply(lambda x: (x['Cum_P']/x['Cum_I']*100) if x['Cum_I']>0 else 0, axis=1)
                 df_w = df_w.reset_index()
+                
                 ymin, ymax = df_w['ROI'].min(), df_w['ROI'].max()
                 stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=1)]
                 if ymax <= 0: stops = [alt.GradientStop(color='#FF0000', offset=0), alt.GradientStop(color='#FF0000', offset=1)]
-                elif ymin < 0 < ymax: stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=abs(ymax)/(ymax-ymin)), alt.GradientStop(color='#FF0000', offset=1)]
+                elif ymin < 0 < ymax:
+                    off = abs(ymax)/(ymax-ymin)
+                    stops = [alt.GradientStop(color='#00C805', offset=0), alt.GradientStop(color='#00C805', offset=off), alt.GradientStop(color='#FF0000', offset=off), alt.GradientStop(color='#FF0000', offset=1)]
+
                 base = alt.Chart(df_w).encode(x='Fecha:T')
                 area = base.mark_area(opacity=0.6, line={'color':'purple'}, color=alt.Gradient(gradient='linear', stops=stops, x1=1, x2=1, y1=0, y2=1)).encode(y='ROI')
                 rule_zero = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='black', strokeDash=[2,2]).encode(y='y')
-                st.altair_chart((area + rule_zero), use_container_width=True)
+                
+                s_max, s_min, s_avg = df_w['ROI'].max(), df_w['ROI'].min(), df_w['ROI'].mean()
+                last_d = df_w['Fecha'].max()
+                
+                rule_max = alt.Chart(pd.DataFrame({'y': [s_max]})).mark_rule(color='green', strokeDash=[4,4]).encode(y='y')
+                lbl_max = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_max], 't': [f"Max: {s_max:.1f}%"]})).mark_text(align='left', dx=5, color='green').encode(x='x', y='y', text='t')
+
+                rule_min = alt.Chart(pd.DataFrame({'y': [s_min]})).mark_rule(color='red', strokeDash=[4,4]).encode(y='y')
+                lbl_min = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_min], 't': [f"Min: {s_min:.1f}%"]})).mark_text(align='left', dx=5, color='red').encode(x='x', y='y', text='t')
+
+                rule_avg = alt.Chart(pd.DataFrame({'y': [s_avg]})).mark_rule(color='blue', strokeDash=[4,4]).encode(y='y')
+                lbl_avg = alt.Chart(pd.DataFrame({'x': [last_d], 'y': [s_avg], 't': [f"Med: {s_avg:.1f}%"]})).mark_text(align='left', dx=5, color='blue').encode(x='x', y='y', text='t')
+                
+                hover = alt.selection_point(fields=['Fecha'], nearest=True, on='mouseover', empty=False)
+                pts = base.mark_point(opacity=0).add_params(hover)
+                crs = base.mark_rule(strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)), tooltip=['Fecha', 'ROI'])
+                st.altair_chart((area + rule_zero + rule_max + lbl_max + rule_min + lbl_min + rule_avg + lbl_avg + pts + crs), use_container_width=True)
 
     st.divider()
     
     # --- LOGICA VISTA MOVIL (SESSION STATE) ---
     vista_movil = st.session_state.cfg_movil
     
-    # --- DESCARGA INFORME FISCAL (INYECCION PLACEHOLDER V32.28) ---
+    # --- DESCARGA INFORME FISCAL (PLACEHOLDER INJECTION) ---
+    # FIX V32.29: Usar asignación para evitar "Nones" visuales
     if año_seleccionado != "Todos los años" and reporte_fiscal_log:
         with tax_container:
-            st.divider()
-            st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
+            _ = st.divider()
+            _ = st.markdown(f"**⚖️ Impuestos {año_seleccionado}**")
             try:
                 pdf_fiscal = generar_informe_fiscal_completo(reporte_fiscal_log, año_seleccionado)
-                st.download_button(f"📄 Informe Renta {año_seleccionado}", pdf_fiscal, f"Informe_Fiscal_{año_seleccionado}.pdf", "application/pdf", use_container_width=True)
+                _ = st.download_button(
+                    f"📄 Informe Renta {año_seleccionado}", 
+                    pdf_fiscal, 
+                    f"Informe_Fiscal_{año_seleccionado}.pdf", 
+                    "application/pdf", 
+                    use_container_width=True
+                )
             except: pass
 
     if tabla:
+        # --- CAMBIO V32.26m ---
         st.subheader("📊 Mi Portafolio") 
         if vista_movil:
             st.info("💡 Vista optimizada para pantallas pequeñas.")
@@ -824,6 +917,7 @@ else:
     st.divider()
     st.subheader("📜 Historial")
     if not df.empty:
+        # --- BOTONES HISTORIAL JUNTOS ---
         c1, c2, c3 = st.columns([1, 1, 6])
         with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
         try: 
