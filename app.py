@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.45c (Final Full Code)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.46 (Final Stable Fix)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -450,7 +450,7 @@ if not df.empty:
             flujo_caja_operaciones -= gasto_total_compra
             # -----------------------------------------------------
 
-            # Coste Base Fiscal (Acciones + Comision)
+            # Coste Base Fiscal (Acciones + Comision) - V32.45 Logic
             coste_base_fiscal = dinero_eur + comi_eur
             delta_i = coste_base_fiscal
             
@@ -666,175 +666,6 @@ with st.sidebar:
     vista_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=False, key="cfg_movil")
 
 # ==========================================
-#        VISTA DETALLE
-# ==========================================
-if st.session_state.ticker_detalle:
-    t = st.session_state.ticker_detalle
-    info = cartera.get(t, {})
-    if st.button("⬅️ Volver", type="secondary"): st.session_state.ticker_detalle = None; st.rerun()
-    st.divider()
-    c1, c2 = st.columns([1, 5])
-    with c1: st.image(get_logo_url(t), width=80)
-    with c2: st.title(f"{info.get('desc', t)} ({t})"); st.caption("Ficha detallada")
-
-    acc = info.get('acciones', 0)
-    with st.spinner("Cargando..."):
-        nom, now, desc = get_stock_data_fmp(t)
-        if not now: nom, now, desc = get_stock_data_yahoo(t)
-    
-    valor_mercado_eur, rent = 0.0, 0.0
-    fx_actual = 1.0
-    if now and acc > 0:
-        fx_actual = get_exchange_rate_now(info.get('moneda_origen', 'USD')) if info.get('moneda_origen') != 'EUR' else 1.0
-        valor_mercado_eur = acc * now * fx_actual
-        if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
-
-    st.markdown("""
-    <style>
-    .metric-container { text-align: left; padding: 5px 0; }
-    .metric-label { font-size: 1rem; color: #6b7280; margin-bottom: 2px; }
-    .metric-value { font-size: 2.5rem; font-weight: 400; color: #111827; line-height: 1.1; }
-    .metric-delta-box { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.9rem; font-weight: 600; margin-top: 5px; }
-    .delta-pos { background-color: #dcfce7; color: #166534; } 
-    .delta-neg { background-color: #fee2e2; color: #991b1b; } 
-    </style>
-    """, unsafe_allow_html=True)
-
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        mon_symbol = "€" if info.get("moneda_origen") == "EUR" else info.get("moneda_origen","")
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Precio</div><div class="metric-value">{fmt_dinamico(now, mon_symbol, 2)}</div></div>', unsafe_allow_html=True)
-    with m2:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Acciones</div><div class="metric-value">{fmt_dinamico(acc)}</div></div>', unsafe_allow_html=True)
-    with m3:
-        rent_pct = rent * 100
-        delta_class = "delta-pos" if rent >= 0 else "delta-neg"
-        symbol = "↑" if rent >= 0 else "↓"
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Valor Actual</div><div class="metric-value">{fmt_dinamico(valor_mercado_eur, "€")}</div><div class="metric-delta-box {delta_class}">{symbol} {fmt_num_es(rent_pct)}%</div></div>', unsafe_allow_html=True)
-    with m4:
-        trad = info.get('pnl_cerrado', 0)
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Trading (Cerrado)</div><div class="metric-value">{fmt_dinamico(trad, "€")}</div></div>', unsafe_allow_html=True)
-
-    st.divider()
-
-    c_tools = st.columns([2, 1, 3])
-    with c_tools[0]:
-        label_t = st.select_slider("Periodo", options=["1 Sem", "1 Mes", "6 Meses", "1 Año", "5 Años", "Todo"], value="1 Año", label_visibility="collapsed")
-        periodo_map = {"1 Sem": "5d", "1 Mes": "1mo", "6 Meses": "6mo", "1 Año": "1y", "5 Años": "5y", "Todo": "max"}
-        width_map = {"1 Sem": 20, "1 Mes": 10, "6 Meses": 4, "1 Año": 2, "5 Años": 1, "Todo": 1}
-    with c_tools[1]:
-        type_g = st.radio("Estilo", ["Línea", "Velas", "Barras (OHLC)"], horizontal=True, label_visibility="collapsed")
-    with c_tools[2]:
-        cols_chk = st.columns(4)
-        i_vol = cols_chk[0].checkbox("Volumen", value=False)
-        i_sma = cols_chk[1].checkbox("SMA", value=False)
-        i_sup = cols_chk[2].checkbox("Soportes", value=False)
-        i_ten = cols_chk[3].checkbox("Tendencia", value=False)
-    
-    inds = []
-    if i_vol: inds.append("Volumen")
-    if i_sma: inds.append("SMA")
-    if i_sup: inds.append("Soportes")
-    if i_ten: inds.append("Tendencia")
-    sma_p = 50
-    if i_sma: sma_p = c_tools[2].selectbox("Periodo SMA", [5, 10, 20, 50, 100, 200], index=3, label_visibility="collapsed")
-
-    hist = pd.DataFrame()
-    try:
-        hist = yf.Ticker(t).history(period=periodo_map[label_t]).reset_index()
-        hist['Date'] = pd.to_datetime(hist['Date']).dt.date
-        hist['Volume'] = pd.to_numeric(hist['Volume'], errors='coerce').fillna(0)
-    except: pass
-
-    if not hist.empty:
-        if i_sma: hist['SMA'] = hist['Close'].rolling(window=sma_p).mean()
-        if i_ten:
-            hist['Ord'] = pd.to_datetime(hist['Date']).map(datetime.toordinal)
-            x, y = hist['Ord'].values, hist['Close'].values
-            if len(x)>1: m, b = np.polyfit(x,y,1); hist['Trend'] = m*x+b
-        
-        stat_max = hist['Close'].max(); stat_min = hist['Close'].min(); stat_avg = hist['Close'].mean()
-        last_date = hist['Date'].max()
-        df_price_stats = pd.DataFrame([{'Val': stat_max, 'Label': f"Max: {stat_max:.2f}", 'Color': 'green'}, {'Val': stat_min, 'Label': f"Min: {stat_min:.2f}", 'Color': 'red'}, {'Val': stat_avg, 'Label': f"Med: {stat_avg:.2f}", 'Color': 'blue'}])
-        df_price_stats['Date'] = last_date
-
-        hover = alt.selection_point(fields=['Date'], nearest=True, on='mouseover', empty=False, clear='mouseout')
-        base = alt.Chart(hist).encode(x=alt.X('Date:T', title='Fecha'))
-        cond_color = alt.condition("datum.Open < datum.Close", alt.value("#00C805"), alt.value("#FF0000"))
-
-        if type_g == "Línea":
-            main = base.mark_line(color='#29b5e8').encode(y=alt.Y('Close', scale=alt.Scale(zero=False)))
-        elif type_g == "Velas":
-            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=cond_color)
-            bar = base.mark_bar(width=width_map[label_t]).encode(y='Open', y2='Close', color=cond_color)
-            main = rule + bar
-        elif type_g == "Barras (OHLC)":
-            rule = base.mark_rule().encode(y=alt.Y('Low', scale=alt.Scale(zero=False)), y2='High', color=cond_color)
-            tick_open = base.mark_tick(size=10).encode(y='Open', color=cond_color) 
-            tick_close = base.mark_tick(size=10).encode(y='Close', color=cond_color)
-            main = rule + tick_open + tick_close
-
-        tooltips = [alt.Tooltip('Date', title='Fecha'), alt.Tooltip('Close', title='Precio', format=',.2f'), alt.Tooltip('Volume', title='Vol', format=',')]
-        points = base.mark_point().encode(y='Close', opacity=alt.value(0), tooltip=tooltips).add_params(hover)
-        rule_hover = base.mark_rule(color='gray', strokeDash=[4,4]).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
-        
-        stats_layers = []
-        for _, r in df_price_stats.iterrows():
-            stats_layers.append(alt.Chart(pd.DataFrame({'y':[r['Val']]})).mark_rule(color=r['Color'], strokeDash=[4,4]).encode(y='y'))
-            stats_layers.append(alt.Chart(pd.DataFrame({'x':[r['Date']], 'y':[r['Val']], 't':[r['Label']]})).mark_text(color=r['Color'], align='left', dx=5).encode(x='x', y='y', text='t'))
-
-        layers = [main, points, rule_hover] + stats_layers
-        movs_raw = info.get('movimientos', [])
-        if movs_raw:
-            df_m_chart = pd.DataFrame(movs_raw)
-            df_m_chart['Date'] = pd.to_datetime(df_m_chart['Fecha_Raw']).dt.date
-            df_m_chart = df_m_chart[df_m_chart['Date'] >= hist['Date'].min()]
-            if not df_m_chart.empty:
-                compras = df_m_chart[df_m_chart['Tipo'] == 'Compra']
-                if not compras.empty: layers.append(alt.Chart(compras).mark_point(shape='circle', size=100, color='blue', filled=True).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
-                ventas = df_m_chart[df_m_chart['Tipo'] == 'Venta']
-                if not ventas.empty: layers.append(alt.Chart(ventas).mark_point(shape='triangle', size=100, color='red', filled=True).encode(x='Date:T', y='Precio', tooltip=['Date', 'Precio', 'Cantidad']))
-
-        if i_sma: layers.append(base.mark_line(color='orange', strokeDash=[2,2]).encode(y='SMA'))
-        if i_ten and 'Trend' in hist: layers.append(base.mark_line(color='purple').encode(y='Trend'))
-
-        chart_final = alt.layer(*layers).properties(height=400, width='container')
-        if i_vol:
-            vol_chart = base.mark_bar(width=width_map[label_t]).encode(y=alt.Y('Volume', axis=alt.Axis(format='~s')), color=cond_color).properties(height=100).add_params(hover)
-            chart_final = alt.vconcat(chart_final, vol_chart).resolve_scale(x='shared')
-        st.altair_chart(chart_final, use_container_width=True)
-
-    lotes = info.get('lotes', [])
-    if lotes and now:
-        st.subheader("📦 Desglose de Lotes Activos (FIFO)")
-        data_lotes = []
-        for l in lotes:
-            cant = l['acciones_restantes']
-            coste_paquete = cant * l['coste_por_accion_eur']
-            valor_paquete = cant * now * fx_actual
-            plusvalia = valor_paquete - coste_paquete
-            rent_lote = (plusvalia / coste_paquete) * 100 if coste_paquete > 0 else 0
-            data_lotes.append({"Fecha Compra": l['fecha_str'], "Acciones": cant, "Precio Orig. (EUR)": l['coste_por_accion_eur'], "Coste Lote": coste_paquete, "Valor Hoy": valor_paquete, "Plusvalía": plusvalia, "% Rent.": rent_lote})
-        
-        df_lotes = pd.DataFrame(data_lotes)
-        if not df_lotes.empty:
-            def estilo_lotes(row):
-                color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' 
-                return [f'background-color: {color}; color: black']*len(row)
-            df_lotes = df_lotes.sort_values(by="Fecha Compra", ascending=False)
-            st.dataframe(df_lotes.style.format({"Acciones": lambda x: fmt_dinamico(x), "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €", "Coste Lote": lambda x: fmt_num_es(x) + " €", "Valor Hoy": lambda x: fmt_num_es(x) + " €", "Plusvalía": lambda x: fmt_num_es(x) + " €", "% Rent.": lambda x: fmt_num_es(x) + "%"}).apply(estilo_lotes, axis=1), use_container_width=True, hide_index=True)
-
-    with st.expander("📖 Descripción"): st.write(desc if desc else "N/A")
-    st.subheader("📝 Movimientos Históricos")
-    if info['movimientos']:
-        df_m = pd.DataFrame(info['movimientos'])
-        df_m = df_m.sort_values(by='Fecha_dt', ascending=False)
-        cols_ver = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
-        for c in cols_ver:
-            if c not in df_m.columns: df_m[c] = None
-        st.dataframe(df_m[cols_ver], use_container_width=True, hide_index=True)
-
-# ==========================================
 #        DASHBOARD (PORTADA)
 # ==========================================
 else:
@@ -847,11 +678,13 @@ else:
             alive = i['acciones'] > 0.001
             act = abs(i['pnl_cerrado']) > 0.01
             if (ver_solo_activas and alive) or (not ver_solo_activas and (alive or act)):
-                p_now = 0
+                p_now = 0.0
                 if i['acciones'] > 0.001:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 
+                if p_now is None: p_now = 0.0
+
                 fx_hoy = 1.0
                 if i['movimientos'] and i['movimientos'][-1]['Moneda'] != 'EUR':
                      fx_hoy = get_exchange_rate_now(i['movimientos'][-1]['Moneda'], MONEDA_BASE)
