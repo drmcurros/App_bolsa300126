@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.46 (Final Stable Fix)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.45 (Tax Perfect)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -115,6 +115,7 @@ def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+# --- FUNCION CRITICA: DIVISA HISTORICA ---
 def get_historical_eur_rate(date_obj, from_currency):
     if from_currency == "EUR": return 1.0
     ticker = f"{MONEDA_BASE}=X" if from_currency == "USD" else f"{from_currency}{MONEDA_BASE}=X"
@@ -374,7 +375,7 @@ if data:
         df['Cambio'] = pd.to_numeric(df['Cambio'], errors='coerce').fillna(1.0)
 
 # ==============================================================================
-# 1. SIDEBAR (TOP): FILTROS & CAPITAL
+# 1. SIDEBAR (TOP): FILTROS
 # ==============================================================================
 with st.sidebar:
     st.header("Filtros")
@@ -384,17 +385,6 @@ with st.sidebar:
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
-    
-    # --- NOVEDAD V32.45c: CAPITAL NETO MANUAL ---
-    _ = st.markdown("---")
-    st.markdown("💰 **Gestión de Liquidez**")
-    capital_neto_input = st.number_input(
-        "Capital Neto (Ingresos - Retiradas) €:", 
-        min_value=0.0, 
-        step=100.0, 
-        format="%.2f",
-        help="Suma total del dinero ingresado en el broker menos lo que has retirado a tu banco. Sirve para calcular tu liquidez actual."
-    )
     _ = st.divider()
 
 # ==============================================================================
@@ -402,8 +392,6 @@ with st.sidebar:
 # ==============================================================================
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
-# VARIABLE PARA EL FLUJO DE CAJA DE OPERACIONES
-flujo_caja_operaciones = 0.0 
 roi_log = []
 reporte_fiscal_log = []
 
@@ -445,12 +433,6 @@ if not df.empty:
         _ = cartera[tick]['movimientos'].append(row)
 
         if tipo == "Compra":
-            # --- CAJA: SALE DINERO (Coste Acciones + Comision) ---
-            gasto_total_compra = dinero_eur + comi_eur
-            flujo_caja_operaciones -= gasto_total_compra
-            # -----------------------------------------------------
-
-            # Coste Base Fiscal (Acciones + Comision) - V32.45 Logic
             coste_base_fiscal = dinero_eur + comi_eur
             delta_i = coste_base_fiscal
             
@@ -463,15 +445,10 @@ if not df.empty:
             if cartera[tick]['acciones'] > 0: cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
 
         elif tipo == "Venta":
-            # --- CAJA: ENTRA DINERO (Venta - Comision) ---
             ingreso_neto_venta = dinero_eur - comi_eur
-            flujo_caja_operaciones += ingreso_neto_venta
-            # ---------------------------------------------
-
             acciones_a_vender = acciones_op
             coste_total_venta_fifo = 0.0
             
-            # Valor Transmision Fiscal (Neto) por accion
             precio_venta_neto_unitario = ingreso_neto_venta / acciones_op if acciones_op > 0 else 0
 
             isin_actual = ""
@@ -532,11 +509,7 @@ if not df.empty:
                 cartera[tick]['pmc'] = cartera[tick]['coste_total_eur'] / cartera[tick]['acciones']
 
         elif tipo == "Dividendo":
-            # --- CAJA: ENTRA DINERO (Div - Comision) ---
             ingreso_neto_div = dinero_eur - comi_eur
-            flujo_caja_operaciones += ingreso_neto_div
-            # -------------------------------------------
-
             delta_p += dinero_eur
             if en_rango_visual: total_div += dinero_eur
             
@@ -613,7 +586,7 @@ with st.sidebar:
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
                 
-                # TOOLTIPS V32.45b
+                # TOOLTIPS V32.45
                 dinero_total = c1.number_input("Importe Bruto (Dinero)", min_value=0.00, step=10.0, help="Precio x Acciones (Sin restar/sumar comisiones).")
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario de cotización.")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos totales del broker.")
@@ -698,27 +671,16 @@ else:
 
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
-    
-    # --- CALCULO LIQUIDEZ V32.45c (Solo visual) ---
-    liquidez_disponible = capital_neto_input + flujo_caja_operaciones
-    # ----------------------------------------------
 
-    # --- DISEÑO HEADER PRO V32.45c ---
-    c_hdr_1, c_hdr_2, c_hdr_3 = st.columns([1.5, 2, 2])
+    # --- DISEÑO HEADER ---
+    c_hdr_1, c_hdr_2 = st.columns([1, 2])
     with c_hdr_1:
         st.title("💼 Cartera") 
     with c_hdr_2:
         st.markdown(f"""
-            <div style="text-align: right; line-height: 2.5rem;">
-                <span style="font-size: 1.2rem; color: gray;">Liquidez (Caja)</span><br>
-                <span style="font-size: 2.5rem; font-weight: bold; color: #166534;">{fmt_dinamico(liquidez_disponible, '€')}</span>
-            </div>
-        """, unsafe_allow_html=True, help="Dinero efectivo disponible. (Capital aportado + Ventas + Divs - Compras - Comisiones).")
-    with c_hdr_3:
-        st.markdown(f"""
-            <div style="text-align: right; line-height: 2.5rem;">
-                <span style="font-size: 1.2rem; color: gray;">Invertido (Acciones)</span><br>
-                <span style="font-size: 2.5rem; font-weight: bold; color: #1e3a8a;">{fmt_dinamico(valor_total_cartera, '€')}</span>
+            <div style="text-align: right; line-height: 4rem;">
+                <span style="font-size: 1.5rem; color: gray; vertical-align: middle;">Valor Cartera</span>
+                <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
         """, unsafe_allow_html=True, help="Valor actual de mercado de todas tus posiciones vivas. (Precio actual x Acciones).")
     
