@@ -18,7 +18,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.45b (Capital Manual)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.45c (Safe Cash Flow)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -48,19 +48,52 @@ def get_all_users():
         return {r['fields']['Username']: r['fields'] for r in records if 'Username' in r['fields']}
     except: return {}
 
+def register_new_user(username, password, name):
+    try:
+        existing = get_all_users()
+        if username in existing: return False, "El usuario ya existe."
+        table_users.create({"Username": username, "Password": password, "Nombre": name, "Rol": "user"})
+        return True, "Usuario creado correctamente."
+    except Exception as e: return False, f"Error creando usuario: {e}"
+
 def login_system():
     if st.session_state.current_user: return True
+    try: query_params = st.query_params
+    except: query_params = st.experimental_get_query_params()
+    invite_code_url = query_params.get("invite", "")
+    if isinstance(invite_code_url, list): invite_code_url = invite_code_url[0]
+
     st.header("🔐 Acceso al Portal")
-    with st.form("login_form"):
-        user_in = st.text_input("Usuario")
-        pass_in = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Entrar", type="primary"):
-            users_db = get_all_users()
-            if user_in in users_db and users_db[user_in].get('Password') == pass_in:
-                st.session_state.current_user = user_in
-                st.session_state.user_role = users_db[user_in].get('Rol', 'user')
-                st.rerun()
-            else: st.error("Incorrecto")
+    tab1, tab2 = st.tabs(["Iniciar Sesión", "Registrarse"])
+    
+    with tab1:
+        with st.form("login_form"):
+            user_in = st.text_input("Usuario")
+            pass_in = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Entrar", type="primary"):
+                users_db = get_all_users()
+                if user_in in users_db and users_db[user_in].get('Password') == pass_in:
+                    st.session_state.current_user = user_in
+                    st.session_state.user_role = users_db[user_in].get('Rol', 'user')
+                    st.rerun()
+                else: st.error("Incorrecto")
+    with tab2:
+        with st.form("register_form"):
+            new_user = st.text_input("Nuevo Usuario")
+            new_pass = st.text_input("Nueva Contraseña", type="password")
+            new_name = st.text_input("Tu Nombre")
+            code_in = st.text_input("Código de Invitación", value=invite_code_url)
+            if st.form_submit_button("Crear Cuenta"):
+                if code_in == st.secrets["general"]["invite_code"]:
+                    if new_user and new_pass:
+                        ok, msg = register_new_user(new_user, new_pass, new_name)
+                        if ok: 
+                            st.success(msg)
+                            time.sleep(1)
+                            st.rerun()
+                        else: st.error(msg)
+                    else: st.warning("Rellena todo")
+                else: st.error("Código inválido")
     return False
 
 # --- FUNCIONES DATOS Y FORMATO ---
@@ -82,6 +115,7 @@ def fmt_num_es(valor):
     if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+# --- FUNCION CRITICA: DIVISA HISTORICA ---
 def get_historical_eur_rate(date_obj, from_currency):
     if from_currency == "EUR": return 1.0
     ticker = f"{MONEDA_BASE}=X" if from_currency == "USD" else f"{from_currency}{MONEDA_BASE}=X"
@@ -102,9 +136,29 @@ def get_exchange_rate_now(from_curr, to_curr="EUR"):
     try:
         pair = f"{to_curr}=X" if from_curr == "USD" else f"{from_curr}{to_curr}=X"
         hist = yf.Ticker(pair).history(period="1d")
-        if not hist.empty: return hist['Close'].iloc[-1]
+        if not hist.empty:
+            return hist['Close'].iloc[-1]
     except: pass
     return 1.0 
+
+@st.cache_data(show_spinner=False)
+def get_ticker_isin(ticker):
+    try:
+        t = yf.Ticker(ticker)
+        isin = t.isin
+        if isin and isin != '-' and len(isin) > 5: return isin
+    except: pass
+    try:
+        api_key = st.secrets["fmp"]["api_key"]
+        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
+        resp = requests.get(url, timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                isin = data[0].get('isin')
+                if isin and len(isin) > 5: return isin
+    except: pass
+    return ""
 
 def get_logo_url(ticker):
     return f"https://financialmodelingprep.com/image-stock/{ticker}.png"
@@ -290,6 +344,7 @@ c_user, c_logout = st.columns([6, 1])
 c_user.write(f"👤 **{st.session_state.current_user}** ({st.session_state.user_role.upper()})")
 if c_logout.button("Salir"):
     st.session_state.current_user = None
+    st.session_state.password_correct = False
     st.rerun()
 
 ver_todo = False
@@ -333,15 +388,15 @@ with st.sidebar:
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
     
-    # --- NOVEDAD V32.45b: INPUT CAPITAL MANUAL ---
+    # --- NOVEDAD V32.45c: CAPITAL NETO MANUAL ---
     _ = st.markdown("---")
     st.markdown("💰 **Gestión de Liquidez**")
-    capital_inicial = st.number_input(
-        "Capital Total Aportado (€):", 
+    capital_neto_input = st.number_input(
+        "Capital Neto (Ingresos - Retiradas) €:", 
         min_value=0.0, 
         step=100.0, 
         format="%.2f",
-        help="Suma total del dinero que has transferido desde tu banco a tu broker. Se usará para calcular tu liquidez disponible."
+        help="Suma total del dinero ingresado en el broker menos lo que has retirado a tu banco. Sirve para calcular tu liquidez actual."
     )
     _ = st.divider()
 
@@ -350,9 +405,8 @@ with st.sidebar:
 # ==============================================================================
 cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
-# --- NOVEDAD V32.45b: BALANCE DE CAJA ---
+# VARIABLE PARA EL FLUJO DE CAJA DE OPERACIONES
 flujo_caja_operaciones = 0.0 
-# ----------------------------------------
 roi_log = []
 reporte_fiscal_log = []
 
@@ -372,7 +426,7 @@ if not df.empty:
              else: fx = get_exchange_rate_now(mon, MONEDA_BASE)
 
         dinero_eur = dinero * fx
-        comi_eur = comi * fx # Comision en euros reales
+        comi_eur = comi * fx
         
         if precio <= 0: precio = 1
         acciones_op = round(dinero / precio, 8) 
@@ -399,7 +453,7 @@ if not df.empty:
             flujo_caja_operaciones -= gasto_total_compra
             # -----------------------------------------------------
 
-            # Coste Base Fiscal (Acciones + Comision)
+            # Coste Base Fiscal (Acciones + Comision) - V32.45 Logic
             coste_base_fiscal = dinero_eur + comi_eur
             delta_i = coste_base_fiscal
             
@@ -562,8 +616,8 @@ with st.sidebar:
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
                 
-                # TOOLTIPS
-                dinero_total = c1.number_input("Importe Bruto (Dinero)", min_value=0.00, step=10.0, help="Total precio x acciones (sin restar comisiones).")
+                # TOOLTIPS V32.45b
+                dinero_total = c1.number_input("Importe Bruto (Dinero)", min_value=0.00, step=10.0, help="Precio x Acciones (Sin restar/sumar comisiones).")
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario de cotización.")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos totales del broker.")
                 
@@ -588,7 +642,6 @@ with st.sidebar:
 
                         if moneda != "EUR":
                             fx_hist_used = get_historical_eur_rate(dt_final, moneda)
-                            # NO convertimos importes, guardamos original + cambio
                             st.toast(f"💱 Cambio histórico detectado: {fx_hist_used:.4f}", icon="ℹ️")
 
                         datos = {
@@ -633,7 +686,6 @@ else:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
                 
-                # Valoracion a EUR
                 fx_hoy = 1.0
                 if i['movimientos'] and i['movimientos'][-1]['Moneda'] != 'EUR':
                      fx_hoy = get_exchange_rate_now(i['movimientos'][-1]['Moneda'], MONEDA_BASE)
@@ -648,11 +700,11 @@ else:
     neto = pnl_cerrado + total_div - total_comi
     roi = (neto/compras_eur)*100 if compras_eur>0 else 0
     
-    # --- CALCULO LIQUIDEZ V32.45b ---
-    liquidez_disponible = capital_inicial + flujo_caja_operaciones
-    # --------------------------------
+    # --- CALCULO LIQUIDEZ V32.45c (Solo visual) ---
+    liquidez_disponible = capital_neto_input + flujo_caja_operaciones
+    # ----------------------------------------------
 
-    # --- DISEÑO HEADER PRO V32.45b (DOS METRICAS GIGANTES) ---
+    # --- DISEÑO HEADER PRO V32.45c ---
     c_hdr_1, c_hdr_2, c_hdr_3 = st.columns([1.5, 2, 2])
     with c_hdr_1:
         st.title("💼 Cartera") 
@@ -662,25 +714,25 @@ else:
                 <span style="font-size: 1.2rem; color: gray;">Liquidez (Caja)</span><br>
                 <span style="font-size: 2.5rem; font-weight: bold; color: #166534;">{fmt_dinamico(liquidez_disponible, '€')}</span>
             </div>
-        """, unsafe_allow_html=True, help=f"Dinero disponible para invertir. \n\nCálculo: {fmt_num_es(capital_inicial)} (Capital) + {fmt_num_es(flujo_caja_operaciones)} (Operaciones cerradas + Divs - Compras)")
+        """, unsafe_allow_html=True, help="Dinero efectivo disponible. (Capital aportado + Ventas + Divs - Compras - Comisiones).")
     with c_hdr_3:
         st.markdown(f"""
             <div style="text-align: right; line-height: 2.5rem;">
                 <span style="font-size: 1.2rem; color: gray;">Invertido (Acciones)</span><br>
                 <span style="font-size: 2.5rem; font-weight: bold; color: #1e3a8a;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
-        """, unsafe_allow_html=True, help="Valor de mercado actual de todas tus posiciones vivas.")
+        """, unsafe_allow_html=True, help="Valor actual de mercado de todas tus posiciones vivas. (Precio actual x Acciones).")
     
     _ = st.markdown("---")
 
-    # --- MÉTRICAS SECUNDARIAS (3 DECIMALES + TOOLTIPS) ---
+    # --- MÉTRICAS SECUNDARIAS ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%", help="Ganancia Real: (Ventas - Compras) + Dividendos - Comisiones.")
     m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'), help="Resultado bruto solo de operaciones cerradas (Venta - Compra).")
     m3.metric("Dividendos", fmt_dinamico(total_div, '€'), help="Suma bruta de los dividendos recibidos.")
     m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}", help="Gastos totales del broker.")
 
-    # --- GRÁFICO ROI (FIX MANUAL LAYERS) ---
+    # --- GRÁFICO ROI ---
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
             df_r = pd.DataFrame(roi_log)
@@ -726,7 +778,7 @@ else:
 
     _ = st.divider()
     
-    # --- LOGICA VISTA MOVIL (SESSION STATE) ---
+    # --- LOGICA VISTA MOVIL ---
     vista_movil = st.session_state.cfg_movil
 
     if tabla:
