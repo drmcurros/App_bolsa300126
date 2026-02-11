@@ -206,7 +206,7 @@ def guardar_en_airtable(record):
         time.sleep(1) 
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
-        st.cache_data.clear() # Limpiamos para asegurar que el nuevo registro se procese
+        st.cache_data.clear() # Limpiar caché
         st.rerun()
     except Exception as e: st.error(f"Error guardando: {e}")
 
@@ -316,7 +316,7 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
 
     pdf.set_font("Arial", 'B', 9)
     cols_div = [("Ticker", 30), ("Fecha Cobro", 40), ("Importe Bruto", 40), ("Gastos Ded.", 40), ("Importe Neto", 40)]
-    for txt, w in cols_div: _ = pdf.cell(w, 8, txt, 1, 0, 'C')
+    for txt, w in cols: _ = pdf.cell(w, 8, txt, 1, 0, 'C')
     _ = pdf.ln()
 
     pdf.set_font("Arial", '', 9)
@@ -339,7 +339,14 @@ def generar_informe_fiscal_completo(datos_fiscales, año, nombre_titular, dni_ti
     
     return pdf.output(dest='S').encode('latin-1')
 
-# --- APP INICIO ---
+# --- APP INICIO: LECTURA CON CACHÉ ---
+@st.cache_data(ttl=600, show_spinner="Sincronizando con Airtable...")
+def fetch_data():
+    try:
+        return table_ops.all()
+    except:
+        return []
+
 if not login_system(): st.stop()
 
 c_user, c_logout = st.columns([6, 1])
@@ -353,13 +360,8 @@ ver_todo = False
 if st.session_state.user_role == 'admin':
     ver_todo = st.toggle("👁️ Modo Admin", value=False)
 
-# --- RECALCULAR FIFO: Función de carga con caché ---
-@st.cache_data(ttl=600, show_spinner="Consultando Airtable...")
-def cargar_datos_desde_airtable():
-    try: return table_ops.all()
-    except: return []
-
-data = cargar_datos_desde_airtable()
+# Cargar datos desde Airtable
+data = fetch_data()
 
 df = pd.DataFrame()
 if data:
@@ -371,21 +373,23 @@ if data:
         if not ver_todo: df = pd.DataFrame()
 
     if not df.empty:
-        # AFINAMIENTO MATEMÁTICO: Limpieza rigurosa tras edición manual
+        # AFINAMIENTO v32.45: Limpieza de datos manuales
         if 'Fecha' in df.columns:
+            # Quitamos espacios invisibles y convertimos a datetime robusto
             df['Fecha_dt'] = pd.to_datetime(df['Fecha'].astype(str).str.strip(), errors='coerce')
-            df = df.dropna(subset=['Fecha_dt']) # Protege el FIFO de errores manuales en fecha
+            # Descartamos registros con fecha corrupta
+            df = df.dropna(subset=['Fecha_dt'])
             df['Año'] = df['Fecha_dt'].dt.year 
             df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M')
         else: 
             df['Año'] = datetime.now().year
             df['Fecha_dt'] = datetime.now()
         
-        # Validación de tipos numéricos
+        # Asegurar tipos numéricos (limpiando comas de texto manual)
         for col in ["Cantidad", "Precio", "Comision", "Cambio"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-        
+                
         if 'Cambio' not in df.columns: df['Cambio'] = 1.0
 
 # ==============================================================================
@@ -393,20 +397,20 @@ if data:
 # ==============================================================================
 with st.sidebar:
     st.header("Filtros")
+    
+    # --- BOTÓN RECALCULAR FIFO ---
+    if st.button("🔄 Recalcular y Sincronizar", use_container_width=True, type="secondary"):
+        st.cache_data.clear() # Limpia la memoria de la lectura de Airtable
+        st.toast("Recalculando motor FIFO con datos frescos...", icon="⚙️")
+        time.sleep(1)
+        st.rerun()
+        
     lista_años = ["Todos los años"]
     if not df.empty and 'Año' in df.columns:
         años_disponibles = sorted(df['Año'].dropna().unique().astype(int), reverse=True)
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
-    
-    # BOTÓN NUEVO: RECALCULAR FIFO
-    if st.button("🔄 Recalcular FIFO y Sincronizar", type="secondary", use_container_width=True):
-        st.cache_data.clear()
-        st.toast("Actualizando motor matemático...", icon="⚙️")
-        time.sleep(0.5)
-        st.rerun()
-        
     _ = st.divider()
 
 # ==============================================================================
@@ -416,12 +420,13 @@ cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
 reporte_fiscal_log = []
-alertas_divisa = [] # Script de validación
+validaciones_pendientes = [] # Para el script de validación manual
 
 if not df.empty:
     colas_fifo = {}
     isin_cache_local = {}
 
+    # Ordenamos cronológicamente para que el FIFO sea perfecto
     for i, row in df.sort_values(by="Fecha_dt").iterrows():
         tipo, tick = row.get('Tipo'), str(row.get('Ticker')).strip()
         dinero, precio = float(row.get('Cantidad', 0)), float(row.get('Precio', 1))
@@ -430,9 +435,9 @@ if not df.empty:
         fx = 1.0 
         val_cambio_db = float(row.get('Cambio', 1.0))
         
-        # VALIDACIÓN: Detección de errores manuales en divisa
+        # VALIDACIÓN: Detección de olvido de Cambio en edición manual
         if mon != "EUR" and val_cambio_db == 1.0:
-            alertas_divisa.append(f"{tick} ({row.get('Fecha_str')})")
+            validaciones_pendientes.append(f"{tick} | {row.get('Fecha_str')}")
 
         if mon != "EUR":
              if val_cambio_db != 1.0 and val_cambio_db > 0:
@@ -462,8 +467,9 @@ if not df.empty:
         _ = cartera[tick]['movimientos'].append(row)
 
         if tipo == "Compra":
+            # --- FIX FISCAL V32.45: SUMAR COMISION AL COSTE BASE ---
             coste_real_compra = dinero_eur + (comi * fx)
-            delta_i = coste_real_compra 
+            delta_i = coste_real_compra
             
             cartera[tick]['acciones'] += acciones_op
             cartera[tick]['coste_total_eur'] += coste_real_compra
@@ -475,10 +481,19 @@ if not df.empty:
 
         elif tipo == "Venta":
             acciones_a_vender = acciones_op
+            
+            # --- PROTECCIÓN ANTI-DECIMALES (Limpieza de residuos) ---
+            # Si intentas vender el 99% de lo que tienes, el sistema asume que vendes TODO (100%)
+            # Esto corrige errores de redondeo cuando el input manual no es exacto al milímetro.
+            if cartera[tick]['acciones'] > 0:
+                 ratio_venta = acciones_a_vender / cartera[tick]['acciones']
+                 if 0.98 < ratio_venta < 1.02: # Si está en un margen del 2%
+                     acciones_a_vender = cartera[tick]['acciones'] # Forzamos venta de todo el stock
+            # --------------------------------------------------------
+
             coste_total_venta_fifo = 0.0
-            # AFINAMIENTO FISCAL: Valor transmisión neto
             valor_transmision_neto_total = dinero_eur - (comi * fx) 
-            precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
+            precio_venta_neto_unitario = valor_transmision_neto_total / acciones_a_vender if acciones_a_vender > 0 else 0
 
             isin_actual = ""
             if es_año_fiscal:
@@ -489,7 +504,9 @@ if not df.empty:
             while acciones_a_vender > 0.00000001 and colas_fifo[tick]:
                 lote = colas_fifo[tick][0]
                 cantidad_consumida = 0
-                if lote['acciones_restantes'] <= acciones_a_vender:
+                
+                # Usamos un margen pequeño (epsilon) para comparaciones float
+                if lote['acciones_restantes'] <= acciones_a_vender + 0.000001:
                     cantidad_consumida = lote['acciones_restantes']
                     coste_total_venta_fifo += cantidad_consumida * lote['coste_por_accion_eur']
                     acciones_a_vender -= cantidad_consumida
@@ -527,8 +544,11 @@ if not df.empty:
                 pnl_cerrado += beneficio
                 cartera[tick]['pnl_cerrado'] += beneficio
             
-            cartera[tick]['acciones'] -= acciones_op
             cartera[tick]['coste_total_eur'] -= coste_total_venta_fifo
+            
+            # RE-SINCRO: Recalculamos el total de acciones basándonos en los lotes FIFO restantes (Fuente de la verdad)
+            total_acciones_restantes = sum(l['acciones_restantes'] for l in colas_fifo[tick])
+            cartera[tick]['acciones'] = total_acciones_restantes
             
             if cartera[tick]['acciones'] < 0.000001: 
                 cartera[tick]['acciones'] = 0.0
@@ -556,11 +576,11 @@ if not df.empty:
         
         _ = roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
-# AVISO DE SCRIPT DE VALIDACIÓN
-if alertas_divisa:
-    st.warning(f"⚠️ **Detectadas {len(alertas_divisa)} correcciones manuales sin cambio histórico.** (Cambio = 1.0 en divisa extranjera). Esto puede falsear el Valor de Venta.")
-    with st.expander("Ver operaciones afectadas"):
-        for a in alertas_divisa: st.write(f"- {a}")
+# --- AVISOS DE VALIDACIÓN MANUAL ---
+if validaciones_pendientes:
+    st.warning(f"⚠️ **Detectadas {len(validaciones_pendientes)} operaciones en divisa con Cambio = 1.0 (posible error manual en Airtable).**")
+    with st.expander("Ver detalle de operaciones a revisar"):
+        for v in validaciones_pendientes: st.write(f"- {v}")
 
 # ==============================================================================
 # 3. SIDEBAR (RESTO)
@@ -666,7 +686,7 @@ with st.sidebar:
 
         if st.session_state.pending_data is None:
             with st.form("trade_form"):
-                st.info("💡 Consejo: Pon siempre los importes BRUTOS (Precio x Acciones).")
+                st.info("💡 Consejo: Pon siempre el VALOR NEGOCIADO BRUTO (Precio x Acciones), sin sumar ni restar comisiones aquí.")
                 
                 tipo = st.selectbox("Tipo", ["Compra", "Venta", "Dividendo"])
                 ticker = st.text_input("Ticker (ej. TSLA)").upper().strip()
@@ -674,7 +694,7 @@ with st.sidebar:
                 moneda = st.selectbox("Moneda", ["EUR", "USD"])
                 c1, c2 = st.columns(2)
                 
-                dinero_total = c1.number_input("Importe Total (Dinero)", min_value=0.00, step=10.0, help="IMPORTE BRUTO (Precio x Acciones).")
+                dinero_total = c1.number_input("Cantidad / Valor Negociado", min_value=0.00, step=10.0, help="IMPORTE BRUTO (Precio x Acciones). NO incluyas la comisión aquí.")
                 precio_manual = c2.number_input("Precio/Acción", min_value=0.0, format="%.2f", help="Precio unitario.")
                 comision = st.number_input("Comisión", min_value=0.0, format="%.2f", help="Gastos del broker.")
                 
@@ -925,15 +945,15 @@ else:
                 <span style="font-size: 1.5rem; color: gray; vertical-align: middle;">Valor Cartera</span>
                 <span style="font-size: 4.0rem; font-weight: bold; vertical-align: middle; margin-left: 10px;">{fmt_dinamico(valor_total_cartera, '€')}</span>
             </div>
-        """, unsafe_allow_html=True, help="Valor actual de mercado de todas tus posiciones vivas. (Precio actual x Acciones).")
+        """, unsafe_allow_html=True)
     
     _ = st.markdown("---")
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%", help="Ganancia Real: (Ventas - Compras) + Dividendos - Comisiones.")
-    m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'), help="Resultado bruto solo de operaciones cerradas (Venta - Compra).")
-    m3.metric("Dividendos", fmt_dinamico(total_div, '€'), help="Suma bruta de los dividendos recibidos.")
-    m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}", help="Gastos totales del broker.")
+    m1.metric("Bº Neto", fmt_dinamico(neto, '€'), f"{fmt_num_es(roi)}%")
+    m2.metric("Trading", fmt_dinamico(pnl_cerrado, '€'))
+    m3.metric("Dividendos", fmt_dinamico(total_div, '€'))
+    m4.metric("Comisiones", f"-{fmt_dinamico(total_comi, '€')}")
 
     if roi_log:
         with st.expander("📈 Ver Evolución ROI", expanded=False):
@@ -960,30 +980,23 @@ else:
     if tabla:
         st.subheader("📊 Mi Portafolio") 
         if vista_movil:
-            st.info("💡 Vista optimizada para pantallas pequeñas.")
             for row in tabla:
                 with st.container(border=True):
                     c_top_1, c_top_2 = st.columns([1, 4])
                     with c_top_1: st.image(row["Logo"], width=50)
                     with c_top_2: 
                         st.write(f"**{row['Ticker']}**")
-                        st.caption(row["Empresa"][:30] + "..." if len(row["Empresa"])>30 else row["Empresa"])
-                    st.divider()
+                        st.caption(row["Empresa"][:30])
                     gm1, gm2 = st.columns(2)
-                    gm3, gm4 = st.columns(2)
                     gm1.metric("Valor Actual", fmt_dinamico(row['Valor'], '€'))
                     gm2.metric("Rent. Latente", fmt_dinamico(row['Latente']*100, '%'), delta=f"{fmt_num_es(row['Latente']*100)}%")
-                    gm3.metric("Invertido", fmt_dinamico(row['Invertido'], '€'))
-                    gm4.metric("Trading", fmt_dinamico(row['Trading'], '€'), delta_color="normal" if row['Trading']>=0 else "inverse")
                     if st.button(f"🔍 Ver Detalle {row['Ticker']}", key=f"mob_btn_{row['Ticker']}", use_container_width=True):
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
         else:
-            _ = st.markdown("---")
             c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
             titles = ["Logo", "Ticker", "Empresa", "Acciones", "PMC", "Invertido", "Valor", "% Latente", "Trading", "Ver"]
             for i, title in enumerate(titles): _ = c[i].markdown(f"**{title}**")
-            _ = st.markdown("---")
             for row in tabla:
                 c = st.columns([0.6, 0.8, 1.5, 0.8, 1, 1, 1, 1, 0.8, 0.5])
                 with c[0]: st.image(row["Logo"], width=30)
@@ -1002,17 +1015,3 @@ else:
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
                 _ = st.divider()
-    
-    _ = st.divider()
-    st.subheader("📜 Historial")
-    if not df.empty:
-        c1, c2, c3 = st.columns([1, 1, 6])
-        with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
-        try: 
-            with c2: 
-                st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
-        except: 
-            pass
-        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
-        df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
-        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
