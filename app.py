@@ -483,8 +483,6 @@ if not df.empty:
             acciones_a_vender = acciones_op
             
             # --- PROTECCIÓN ANTI-DECIMALES (Limpieza de residuos) ---
-            # Si intentas vender el 99% de lo que tienes, el sistema asume que vendes TODO (100%)
-            # Esto corrige errores de redondeo cuando el input manual no es exacto al milímetro.
             if cartera[tick]['acciones'] > 0:
                  ratio_venta = acciones_a_vender / cartera[tick]['acciones']
                  if 0.98 < ratio_venta < 1.02: # Si está en un margen del 2%
@@ -505,7 +503,6 @@ if not df.empty:
                 lote = colas_fifo[tick][0]
                 cantidad_consumida = 0
                 
-                # Usamos un margen pequeño (epsilon) para comparaciones float
                 if lote['acciones_restantes'] <= acciones_a_vender + 0.000001:
                     cantidad_consumida = lote['acciones_restantes']
                     coste_total_venta_fifo += cantidad_consumida * lote['coste_por_accion_eur']
@@ -546,7 +543,7 @@ if not df.empty:
             
             cartera[tick]['coste_total_eur'] -= coste_total_venta_fifo
             
-            # RE-SINCRO: Recalculamos el total de acciones basándonos en los lotes FIFO restantes (Fuente de la verdad)
+            # RE-SINCRO: Recalculamos el total de acciones basándonos en los lotes FIFO restantes
             total_acciones_restantes = sum(l['acciones_restantes'] for l in colas_fifo[tick])
             cartera[tick]['acciones'] = total_acciones_restantes
             
@@ -920,6 +917,10 @@ if st.session_state.ticker_detalle:
 else:
     tabla = []
     valor_total_cartera = 0.0
+    
+    # --- PRECIO CACHÉ PARA FIFO GLOBAL ---
+    cache_precios_dashboard = {} 
+
     with st.spinner("Conectando con el mercado..."):
         for t, i in cartera.items():
             alive = i['acciones'] > 0.001
@@ -929,6 +930,8 @@ else:
                 if i['acciones'] > 0.001:
                     _, p_now, _ = get_stock_data_fmp(t)
                     if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
+                    cache_precios_dashboard[t] = p_now # Guardamos para usar en la tabla FIFO de abajo
+
                 val = i['acciones'] * p_now if p_now else 0
                 valor_total_cartera += val
                 r_lat = (val - i['coste_total_eur'])/i['coste_total_eur'] if i['coste_total_eur']>0 else 0
@@ -1015,3 +1018,76 @@ else:
                         st.session_state.ticker_detalle = row['Ticker']
                         st.rerun()
                 _ = st.divider()
+    
+    # --- NUEVA SECCIÓN: TABLA FIFO GLOBAL ---
+    st.divider()
+    if colas_fifo:
+        st.subheader("📦 Inventario Global de Lotes (FIFO)")
+        datos_globales_fifo = []
+        for t, lotes in colas_fifo.items():
+            if not lotes: continue
+            
+            # Recuperamos precio actual si lo tenemos del bucle anterior, si no (raro), buscamos
+            p_now = cache_precios_dashboard.get(t, 0)
+            if p_now == 0:
+                 # Fallback por si acaso
+                 _, p_now, _ = get_stock_data_fmp(t)
+                 if not p_now: _, p_now, _ = get_stock_data_yahoo(t)
+
+            moneda = cartera[t].get('moneda_origen', 'EUR')
+            fx = 1.0
+            if moneda != 'EUR':
+                 fx = get_exchange_rate_now(moneda, 'EUR')
+            
+            for l in lotes:
+                 # Calcular valores en EUR
+                 valor_lote_eur = l['acciones_restantes'] * p_now * fx
+                 coste_lote_eur = l['acciones_restantes'] * l['coste_por_accion_eur']
+                 plusvalia = valor_lote_eur - coste_lote_eur
+                 pct = (plusvalia / coste_lote_eur) * 100 if coste_lote_eur else 0
+                 
+                 datos_globales_fifo.append({
+                     "Ticker": t,
+                     "Fecha Compra": l['fecha_str'],
+                     "Acciones": l['acciones_restantes'],
+                     "Precio Orig. (EUR)": l['coste_por_accion_eur'],
+                     "Valor Hoy (EUR)": valor_lote_eur,
+                     "Plusvalía": plusvalia,
+                     "%": pct
+                 })
+        
+        if datos_globales_fifo:
+            df_global_fifo = pd.DataFrame(datos_globales_fifo)
+            # Ordenar por fecha de compra más reciente
+            df_global_fifo = df_global_fifo.sort_values(by="Fecha Compra", ascending=False)
+            
+            def estilo_fifo_global(row):
+                color = '#d4edda' if row['Plusvalía'] >= 0 else '#f8d7da' 
+                return [f'background-color: {color}; color: black'] * len(row)
+
+            st.dataframe(
+                df_global_fifo.style.format({
+                    "Acciones": lambda x: fmt_dinamico(x),
+                    "Precio Orig. (EUR)": lambda x: fmt_num_es(x) + " €",
+                    "Valor Hoy (EUR)": lambda x: fmt_num_es(x) + " €",
+                    "Plusvalía": lambda x: fmt_num_es(x) + " €",
+                    "%": lambda x: fmt_num_es(x) + "%"
+                }).apply(estilo_fifo_global, axis=1),
+                use_container_width=True,
+                hide_index=True
+            )
+    # ----------------------------------------
+
+    _ = st.divider()
+    st.subheader("📜 Historial")
+    if not df.empty:
+        c1, c2, c3 = st.columns([1, 1, 6])
+        with c1: st.download_button("Descargar CSV", df.to_csv(index=False).encode('utf-8'), "historial.csv")
+        try: 
+            with c2: 
+                st.download_button("Descargar PDF", generar_pdf_historial(df, f"Historial {año_seleccionado}"), f"historial.pdf")
+        except: 
+            pass
+        cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
+        df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
+        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
