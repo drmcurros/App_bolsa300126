@@ -206,6 +206,7 @@ def guardar_en_airtable(record):
         time.sleep(1) 
         st.session_state.pending_data = None
         st.session_state.adding_mode = False 
+        st.cache_data.clear() # Limpiamos para asegurar que el nuevo registro se procese
         st.rerun()
     except Exception as e: st.error(f"Error guardando: {e}")
 
@@ -352,8 +353,13 @@ ver_todo = False
 if st.session_state.user_role == 'admin':
     ver_todo = st.toggle("👁️ Modo Admin", value=False)
 
-try: data = table_ops.all()
-except: data = []
+# --- RECALCULAR FIFO: Función de carga con caché ---
+@st.cache_data(ttl=600, show_spinner="Consultando Airtable...")
+def cargar_datos_desde_airtable():
+    try: return table_ops.all()
+    except: return []
+
+data = cargar_datos_desde_airtable()
 
 df = pd.DataFrame()
 if data:
@@ -365,20 +371,25 @@ if data:
         if not ver_todo: df = pd.DataFrame()
 
     if not df.empty:
+        # AFINAMIENTO MATEMÁTICO: Limpieza rigurosa tras edición manual
         if 'Fecha' in df.columns:
-            df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
+            df['Fecha_dt'] = pd.to_datetime(df['Fecha'].astype(str).str.strip(), errors='coerce')
+            df = df.dropna(subset=['Fecha_dt']) # Protege el FIFO de errores manuales en fecha
             df['Año'] = df['Fecha_dt'].dt.year 
-            df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M').fillna("")
+            df['Fecha_str'] = df['Fecha_dt'].dt.strftime('%Y/%m/%d %H:%M')
         else: 
             df['Año'] = datetime.now().year
             df['Fecha_dt'] = datetime.now()
-        for col in ["Cantidad", "Precio", "Comision"]:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        
+        # Validación de tipos numéricos
+        for col in ["Cantidad", "Precio", "Comision", "Cambio"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+        
         if 'Cambio' not in df.columns: df['Cambio'] = 1.0
-        df['Cambio'] = pd.to_numeric(df['Cambio'], errors='coerce').fillna(1.0)
 
 # ==============================================================================
-# 1. SIDEBAR (TOP): FILTROS
+# 1. SIDEBAR (TOP): FILTROS Y RECALCULAR
 # ==============================================================================
 with st.sidebar:
     st.header("Filtros")
@@ -388,6 +399,14 @@ with st.sidebar:
         lista_años += list(años_disponibles)
     año_seleccionado = st.selectbox("📅 Año Fiscal:", lista_años)
     ver_solo_activas = st.checkbox("👁️ Ocultar posiciones cerradas", value=False)
+    
+    # BOTÓN NUEVO: RECALCULAR FIFO
+    if st.button("🔄 Recalcular FIFO y Sincronizar", type="secondary", use_container_width=True):
+        st.cache_data.clear()
+        st.toast("Actualizando motor matemático...", icon="⚙️")
+        time.sleep(0.5)
+        st.rerun()
+        
     _ = st.divider()
 
 # ==============================================================================
@@ -397,6 +416,7 @@ cartera = {}
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
 reporte_fiscal_log = []
+alertas_divisa = [] # Script de validación
 
 if not df.empty:
     colas_fifo = {}
@@ -409,6 +429,11 @@ if not df.empty:
         
         fx = 1.0 
         val_cambio_db = float(row.get('Cambio', 1.0))
+        
+        # VALIDACIÓN: Detección de errores manuales en divisa
+        if mon != "EUR" and val_cambio_db == 1.0:
+            alertas_divisa.append(f"{tick} ({row.get('Fecha_str')})")
+
         if mon != "EUR":
              if val_cambio_db != 1.0 and val_cambio_db > 0:
                  fx = val_cambio_db
@@ -437,9 +462,8 @@ if not df.empty:
         _ = cartera[tick]['movimientos'].append(row)
 
         if tipo == "Compra":
-            # --- FIX FISCAL V32.45: SUMAR COMISION AL COSTE BASE ---
             coste_real_compra = dinero_eur + (comi * fx)
-            delta_i = coste_real_compra # El dinero que sale del bolsillo es el total
+            delta_i = coste_real_compra 
             
             cartera[tick]['acciones'] += acciones_op
             cartera[tick]['coste_total_eur'] += coste_real_compra
@@ -452,7 +476,8 @@ if not df.empty:
         elif tipo == "Venta":
             acciones_a_vender = acciones_op
             coste_total_venta_fifo = 0.0
-            valor_transmision_neto_total = dinero_eur * fx - (comi * fx) 
+            # AFINAMIENTO FISCAL: Valor transmisión neto
+            valor_transmision_neto_total = dinero_eur - (comi * fx) 
             precio_venta_neto_unitario = valor_transmision_neto_total / acciones_op if acciones_op > 0 else 0
 
             isin_actual = ""
@@ -531,6 +556,12 @@ if not df.empty:
         
         _ = roi_log.append({'Fecha': row.get('Fecha_dt'), 'Year': row.get('Año'), 'Delta_Profit': delta_p, 'Delta_Invest': delta_i})
 
+# AVISO DE SCRIPT DE VALIDACIÓN
+if alertas_divisa:
+    st.warning(f"⚠️ **Detectadas {len(alertas_divisa)} correcciones manuales sin cambio histórico.** (Cambio = 1.0 en divisa extranjera). Esto puede falsear el Valor de Venta.")
+    with st.expander("Ver operaciones afectadas"):
+        for a in alertas_divisa: st.write(f"- {a}")
+
 # ==============================================================================
 # 3. SIDEBAR (RESTO)
 # ==============================================================================
@@ -582,6 +613,7 @@ with st.sidebar:
                             st.error(f"Error fila {idx}: {e}")
                     
                     st.success("✅ Importación completada!")
+                    st.cache_data.clear()
                     time.sleep(1)
                     st.rerun()
                     
@@ -601,19 +633,19 @@ with st.sidebar:
                 cols_view = ['Ticker', 'Fecha Venta', 'Cantidad', 'Rendimiento'] if 'Rendimiento' in df_fiscal.columns else ['Ticker', 'Fecha', 'Neto']
                 st.dataframe(df_fiscal[cols_view], hide_index=True, use_container_width=True, height=150)
 
-            pdf_fiscal = generar_informe_fiscal_completo(
-                reporte_fiscal_log, 
-                año_seleccionado, 
-                nombre_titular if nombre_titular else "______________________", 
-                dni_titular if dni_titular else "______________________"
-            )
-            st.download_button(
-                label=f"📄 Descargar Informe {año_seleccionado}", 
-                data=pdf_fiscal, 
-                file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
-                mime="application/pdf", 
-                use_container_width=True
-            )
+                pdf_fiscal = generar_informe_fiscal_completo(
+                    reporte_fiscal_log, 
+                    año_seleccionado, 
+                    nombre_titular if nombre_titular else "______________________", 
+                    dni_titular if dni_titular else "______________________"
+                )
+                st.download_button(
+                    label=f"📄 Descargar Informe {año_seleccionado}", 
+                    data=pdf_fiscal, 
+                    file_name=f"Informe_Fiscal_{año_seleccionado}.pdf", 
+                    mime="application/pdf", 
+                    use_container_width=True
+                )
         except Exception as e:
             st.error(f"Error PDF: {e}")
         _ = st.divider()
@@ -694,7 +726,7 @@ with st.sidebar:
     vista_movil = st.toggle("📱 Vista Móvil / Tarjetas", value=False, key="cfg_movil")
 
 # ==========================================
-#        VISTA DETALLE
+#         VISTA DETALLE
 # ==========================================
 if st.session_state.ticker_detalle:
     t = st.session_state.ticker_detalle
@@ -863,7 +895,7 @@ if st.session_state.ticker_detalle:
         st.dataframe(df_m[cols_ver], use_container_width=True, hide_index=True)
 
 # ==========================================
-#        DASHBOARD (PORTADA)
+#         DASHBOARD (PORTADA)
 # ==========================================
 else:
     tabla = []
