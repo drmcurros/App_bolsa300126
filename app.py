@@ -583,9 +583,9 @@ if validaciones_pendientes:
 # 3. SIDEBAR (RESTO)
 # ==============================================================================
 with st.sidebar:
-    # --- A. IMPORTACION MASIVA ---
+   # --- A. IMPORTACION MASIVA (INTELIGENTE V32.45) ---
     with st.expander("📂 Importación Masiva (CSV)", expanded=False):
-        st.info("Sube un CSV con: Fecha, Hora, Ticker, Tipo, Total_Dinero, Precio, Comision, Moneda")
+        st.info("Acepta formato V32.45 o Reporte Broker (con Quantity, Price per share, Total Amount, FX Rate)")
         uploaded_file = st.file_uploader("Subir archivo CSV", type=["csv"])
         
         if uploaded_file is not None:
@@ -599,24 +599,74 @@ with st.sidebar:
                     
                     for idx, row in df_upload.iterrows():
                         try:
-                            dt_obj = pd.to_datetime(f"{row['Fecha']} {row.get('Hora', '00:00')}", dayfirst=True)
-                            mon = row['Moneda'].upper().strip()
+                            # 1. NORMALIZACIÓN DE COLUMNAS (Detectar formato Broker vs Formato Manual)
+                            cols = df_upload.columns
+                            
+                            # Fecha y Hora
+                            fecha_raw = row.get('Fecha') or row.get('Date')
+                            hora_raw = row.get('Hora', '00:00')
+                            dt_obj = pd.to_datetime(f"{fecha_raw} {hora_raw}", dayfirst=True)
+                            
+                            # Ticker y Tipo
+                            ticker = str(row.get('Ticker')).upper().strip()
+                            tipo_raw = row.get('Tipo') or row.get('Type')
+                            tipo = str(tipo_raw).capitalize()
+                            # Traducir inglés si viene del broker
+                            if "Buy" in tipo: tipo = "Compra"
+                            elif "Sell" in tipo: tipo = "Venta"
+                            elif "Div" in tipo: tipo = "Dividendo"
+
+                            # Moneda
+                            mon = (row.get('Moneda') or row.get('Currency', 'EUR')).upper().strip()
+
+                            # CÁLCULO INTELIGENTE DE VALORES
+                            cantidad_acciones = 0.0
+                            precio_unitario = 0.0
+                            total_dinero_bruto = 0.0 # Lo que guardamos como 'Cantidad' en DB
+                            comision_calc = 0.0
+                            
+                            # Caso A: Formato Broker (Quantity + Price + Total Amount)
+                            if 'Quantity' in cols and 'Price per share' in cols and 'Total Amount' in cols:
+                                cantidad_acciones = float(str(row['Quantity']).replace(',', '.'))
+                                precio_unitario = float(str(row['Price per share']).replace(',', '.'))
+                                total_amount_neto = float(str(row['Total Amount']).replace(',', '.'))
+                                
+                                # Matemáticas V32.45
+                                total_dinero_bruto = abs(cantidad_acciones * precio_unitario)
+                                comision_calc = abs(abs(total_amount_neto) - total_dinero_bruto)
+                                
+                                # Si es Dividendo, la lógica puede variar, pero asumimos estructura estándar
+                                if tipo == "Dividendo":
+                                    total_dinero_bruto = abs(total_amount_neto) # En div a veces el total amount es lo recibido
+                                    # Ajuste manual posterior si es necesario
+                            
+                            # Caso B: Formato Manual V32.45 (Total_Dinero + Precio + Comision)
+                            else:
+                                total_dinero_bruto = float(str(row.get('Total_Dinero', 0)).replace(',', '.'))
+                                precio_unitario = float(str(row.get('Precio', 0)).replace(',', '.'))
+                                comision_calc = float(str(row.get('Comision', 0)).replace(',', '.'))
+
+                            # Cambio (FX)
                             fx_val = 1.0
-                            if mon != "EUR":
+                            if 'Cambio' in cols: fx_val = float(str(row['Cambio']).replace(',', '.'))
+                            elif 'FX Rate' in cols: fx_val = float(str(row['FX Rate']).replace(',', '.'))
+                            elif mon != "EUR":
                                 fx_val = get_historical_eur_rate(dt_obj, mon)
                             
                             record = {
                                 "Usuario": st.session_state.current_user,
                                 "Fecha": dt_obj.strftime("%Y/%m/%d %H:%M"),
-                                "Ticker": str(row['Ticker']).upper().strip(),
-                                "Tipo": str(row['Tipo']).capitalize(),
-                                "Cantidad": float(str(row['Total_Dinero']).replace(',', '.')),
-                                "Precio": float(str(row['Precio']).replace(',', '.')),
-                                "Comision": float(str(row.get('Comision', 0)).replace(',', '.')),
+                                "Ticker": ticker,
+                                "Tipo": tipo,
+                                "Cantidad": total_dinero_bruto, # Guardamos siempre BRUTO
+                                "Precio": precio_unitario,
+                                "Comision": comision_calc,
                                 "Moneda": mon,
                                 "Cambio": fx_val,
-                                "Descripcion": "Importado CSV"
+                                "Descripcion": "Importado CSV Auto"
                             }
+                            
+                            # Intentar obtener nombre
                             try:
                                 n, _, _ = get_stock_data_yahoo(record['Ticker'])
                                 if n: record['Descripcion'] = n
@@ -1091,3 +1141,4 @@ else:
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
         st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
+
