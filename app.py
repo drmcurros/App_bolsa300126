@@ -19,7 +19,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.45 (Tax Perfect)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.46 (Tax Perfect)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -417,7 +417,7 @@ with st.sidebar:
 # 2. MOTOR DE CÁLCULO
 # ==============================================================================
 cartera = {}
-colas_fifo = {} # <--- INICIALIZADA AQUÍ PARA EVITAR NAMEERROR
+colas_fifo = {} # <--- INICIALIZADA AQUÍ (GLOBAL) PARA EVITAR NAMEERROR
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
 reporte_fiscal_log = []
@@ -583,23 +583,38 @@ if validaciones_pendientes:
 # 3. SIDEBAR (RESTO)
 # ==============================================================================
 with st.sidebar:
-    # --- A. IMPORTACION MASIVA (INTELIGENTE V32.45) ---
+    # --- A. IMPORTACION MASIVA (CORREGIDO v32.46) ---
     with st.expander("📂 Importación Masiva (CSV)", expanded=False):
-        st.info("Acepta formato V32.45 o Reporte Broker (con Quantity, Price per share, Total Amount, FX Rate)")
+        st.info("Soporta formato Europeo (1.000,00) y Americano (1,000.00)")
         uploaded_file = st.file_uploader("Subir archivo CSV", type=["csv"])
         
         if uploaded_file is not None:
             try:
+                # Detectar separador automáticamente
                 df_upload = pd.read_csv(uploaded_file, sep=None, engine='python')
+                st.write("Vista previa de datos cargados:")
                 st.dataframe(df_upload.head(3), hide_index=True)
                 
                 if st.button("🚀 Procesar e Importar"):
                     progress_bar = st.progress(0)
                     total_rows = len(df_upload)
                     
+                    # --- FUNCIÓN DE LIMPIEZA DE NÚMEROS (CRÍTICA) ---
+                    def limpiar_numero_eu(valor):
+                        """Convierte formato 1.234,56 (EU) a 1234.56 (Python)"""
+                        if pd.isna(valor) or str(valor).strip() == '': return 0.0
+                        s = str(valor).strip()
+                        # Si detectamos formato europeo (puntos como miles y coma como decimal)
+                        # O simplemente comas como decimal
+                        if ',' in s:
+                            s = s.replace('.', '')  # Eliminar puntos de miles
+                            s = s.replace(',', '.') # Cambiar coma por punto decimal
+                        return float(s)
+                    # ------------------------------------------------
+                    
                     for idx, row in df_upload.iterrows():
                         try:
-                            # 1. NORMALIZACIÓN DE COLUMNAS (Detectar formato Broker vs Formato Manual)
+                            # 1. NORMALIZACIÓN DE COLUMNAS
                             cols = df_upload.columns
                             
                             # Fecha y Hora
@@ -611,44 +626,45 @@ with st.sidebar:
                             ticker = str(row.get('Ticker')).upper().strip()
                             tipo_raw = row.get('Tipo') or row.get('Type')
                             tipo = str(tipo_raw).capitalize()
-                            # Traducir inglés si viene del broker
-                            if "Buy" in tipo: tipo = "Compra"
-                            elif "Sell" in tipo: tipo = "Venta"
+                            
+                            # Traducción de tipos (Inglés/Español)
+                            if "Buy" in tipo or "Compra" in tipo: tipo = "Compra"
+                            elif "Sell" in tipo or "Venta" in tipo: tipo = "Venta"
                             elif "Div" in tipo: tipo = "Dividendo"
 
                             # Moneda
                             mon = (row.get('Moneda') or row.get('Currency', 'EUR')).upper().strip()
 
-                            # CÁLCULO INTELIGENTE DE VALORES
+                            # CÁLCULO DE VALORES (Usando la limpieza)
                             cantidad_acciones = 0.0
                             precio_unitario = 0.0
-                            total_dinero_bruto = 0.0 # Lo que guardamos como 'Cantidad' en DB
+                            total_dinero_bruto = 0.0 
                             comision_calc = 0.0
                             
                             # Caso A: Formato Broker (Quantity + Price + Total Amount)
                             if 'Quantity' in cols and 'Price per share' in cols and 'Total Amount' in cols:
-                                cantidad_acciones = float(str(row['Quantity']).replace(',', '.'))
-                                precio_unitario = float(str(row['Price per share']).replace(',', '.'))
-                                total_amount_neto = float(str(row['Total Amount']).replace(',', '.'))
+                                cantidad_acciones = limpiar_numero_eu(row['Quantity'])
+                                precio_unitario = limpiar_numero_eu(row['Price per share'])
+                                total_amount_neto = limpiar_numero_eu(row['Total Amount'])
                                 
-                                # Matemáticas V32.45
+                                # Matemáticas: Bruto = Cantidad * Precio
                                 total_dinero_bruto = abs(cantidad_acciones * precio_unitario)
+                                # Comisión = Diferencia entre lo pagado (Neto) y lo que vale (Bruto)
                                 comision_calc = abs(abs(total_amount_neto) - total_dinero_bruto)
                                 
-                                # Si es Dividendo, la lógica puede variar, pero asumimos estructura estándar
                                 if tipo == "Dividendo":
-                                    total_dinero_bruto = abs(total_amount_neto) 
+                                    total_dinero_bruto = abs(total_amount_neto)
                             
-                            # Caso B: Formato Manual V32.45 (Total_Dinero + Precio + Comision)
+                            # Caso B: Formato Manual (Total_Dinero + Precio + Comision)
                             else:
-                                total_dinero_bruto = float(str(row.get('Total_Dinero', 0)).replace(',', '.'))
-                                precio_unitario = float(str(row.get('Precio', 0)).replace(',', '.'))
-                                comision_calc = float(str(row.get('Comision', 0)).replace(',', '.'))
+                                total_dinero_bruto = limpiar_numero_eu(row.get('Total_Dinero', 0))
+                                precio_unitario = limpiar_numero_eu(row.get('Precio', 0))
+                                comision_calc = limpiar_numero_eu(row.get('Comision', 0))
 
                             # Cambio (FX)
                             fx_val = 1.0
-                            if 'Cambio' in cols: fx_val = float(str(row['Cambio']).replace(',', '.'))
-                            elif 'FX Rate' in cols: fx_val = float(str(row['FX Rate']).replace(',', '.'))
+                            if 'Cambio' in cols: fx_val = limpiar_numero_eu(row['Cambio'])
+                            elif 'FX Rate' in cols: fx_val = limpiar_numero_eu(row['FX Rate'])
                             elif mon != "EUR":
                                 fx_val = get_historical_eur_rate(dt_obj, mon)
                             
@@ -657,12 +673,12 @@ with st.sidebar:
                                 "Fecha": dt_obj.strftime("%Y/%m/%d %H:%M"),
                                 "Ticker": ticker,
                                 "Tipo": tipo,
-                                "Cantidad": total_dinero_bruto, # Guardamos siempre BRUTO
+                                "Cantidad": total_dinero_bruto, 
                                 "Precio": precio_unitario,
                                 "Comision": comision_calc,
                                 "Moneda": mon,
                                 "Cambio": fx_val,
-                                "Descripcion": "Importado CSV Auto"
+                                "Descripcion": "Importado Broker"
                             }
                             
                             # Intentar obtener nombre
@@ -1139,4 +1155,4 @@ else:
             pass
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
-        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
+        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)+
