@@ -1155,4 +1155,5 @@ else:
             pass
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
-        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)+
+        st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
+
