@@ -417,13 +417,13 @@ with st.sidebar:
 # 2. MOTOR DE CÁLCULO
 # ==============================================================================
 cartera = {}
+colas_fifo = {} # <--- INICIALIZADA AQUÍ PARA EVITAR NAMEERROR
 total_div, total_comi, pnl_cerrado, compras_eur, ventas_coste = 0.0, 0.0, 0.0, 0.0, 0.0
 roi_log = []
 reporte_fiscal_log = []
 validaciones_pendientes = [] # Para el script de validación manual
 
 if not df.empty:
-    colas_fifo = {}
     isin_cache_local = {}
 
     # Ordenamos cronológicamente para que el FIFO sea perfecto
@@ -583,7 +583,7 @@ if validaciones_pendientes:
 # 3. SIDEBAR (RESTO)
 # ==============================================================================
 with st.sidebar:
-   # --- A. IMPORTACION MASIVA (INTELIGENTE V32.45) ---
+    # --- A. IMPORTACION MASIVA (INTELIGENTE V32.45) ---
     with st.expander("📂 Importación Masiva (CSV)", expanded=False):
         st.info("Acepta formato V32.45 o Reporte Broker (con Quantity, Price per share, Total Amount, FX Rate)")
         uploaded_file = st.file_uploader("Subir archivo CSV", type=["csv"])
@@ -637,8 +637,7 @@ with st.sidebar:
                                 
                                 # Si es Dividendo, la lógica puede variar, pero asumimos estructura estándar
                                 if tipo == "Dividendo":
-                                    total_dinero_bruto = abs(total_amount_neto) # En div a veces el total amount es lo recibido
-                                    # Ajuste manual posterior si es necesario
+                                    total_dinero_bruto = abs(total_amount_neto) 
                             
                             # Caso B: Formato Manual V32.45 (Total_Dinero + Precio + Comision)
                             else:
@@ -1141,4 +1140,3 @@ else:
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
         st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
-
