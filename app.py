@@ -19,7 +19,7 @@ except ImportError:
     HAS_TRANSLATOR = False
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor V32.46 (Tax Perfect)", layout="wide") 
+st.set_page_config(page_title="Gestor V32.46 (Tax Perfect - Manual)", layout="wide") 
 MONEDA_BASE = "EUR" 
 
 # --- ESTADO ---
@@ -583,16 +583,14 @@ if validaciones_pendientes:
 # 3. SIDEBAR (RESTO)
 # ==============================================================================
 with st.sidebar:
-    # --- A. IMPORTACION MASIVA (CORREGIDO v32.46) ---
+    # --- A. IMPORTACION MASIVA (OPCIÓN A: MANUAL + SOPORTE EUROPEO) ---
     with st.expander("📂 Importación Masiva (CSV)", expanded=False):
-        st.info("Soporta formato Europeo (1.000,00) y Americano (1,000.00)")
+        st.info("Sube tu CSV preparado (Opción A). Soporta formato 1.200,00 (EU) y 1,200.00 (US).")
         uploaded_file = st.file_uploader("Subir archivo CSV", type=["csv"])
         
         if uploaded_file is not None:
             try:
-                # Detectar separador automáticamente
                 df_upload = pd.read_csv(uploaded_file, sep=None, engine='python')
-                st.write("Vista previa de datos cargados:")
                 st.dataframe(df_upload.head(3), hide_index=True)
                 
                 if st.button("🚀 Procesar e Importar"):
@@ -614,74 +612,41 @@ with st.sidebar:
                     
                     for idx, row in df_upload.iterrows():
                         try:
-                            # 1. NORMALIZACIÓN DE COLUMNAS
-                            cols = df_upload.columns
-                            
-                            # Fecha y Hora
+                            # Preparar Fecha
                             fecha_raw = row.get('Fecha') or row.get('Date')
                             hora_raw = row.get('Hora', '00:00')
                             dt_obj = pd.to_datetime(f"{fecha_raw} {hora_raw}", dayfirst=True)
                             
-                            # Ticker y Tipo
-                            ticker = str(row.get('Ticker')).upper().strip()
-                            tipo_raw = row.get('Tipo') or row.get('Type')
-                            tipo = str(tipo_raw).capitalize()
-                            
-                            # Traducción de tipos (Inglés/Español)
-                            if "Buy" in tipo or "Compra" in tipo: tipo = "Compra"
-                            elif "Sell" in tipo or "Venta" in tipo: tipo = "Venta"
-                            elif "Div" in tipo: tipo = "Dividendo"
-
-                            # Moneda
                             mon = (row.get('Moneda') or row.get('Currency', 'EUR')).upper().strip()
-
-                            # CÁLCULO DE VALORES (Usando la limpieza)
-                            cantidad_acciones = 0.0
-                            precio_unitario = 0.0
-                            total_dinero_bruto = 0.0 
-                            comision_calc = 0.0
                             
-                            # Caso A: Formato Broker (Quantity + Price + Total Amount)
-                            if 'Quantity' in cols and 'Price per share' in cols and 'Total Amount' in cols:
-                                cantidad_acciones = limpiar_numero_eu(row['Quantity'])
-                                precio_unitario = limpiar_numero_eu(row['Price per share'])
-                                total_amount_neto = limpiar_numero_eu(row['Total Amount'])
-                                
-                                # Matemáticas: Bruto = Cantidad * Precio
-                                total_dinero_bruto = abs(cantidad_acciones * precio_unitario)
-                                # Comisión = Diferencia entre lo pagado (Neto) y lo que vale (Bruto)
-                                comision_calc = abs(abs(total_amount_neto) - total_dinero_bruto)
-                                
-                                if tipo == "Dividendo":
-                                    total_dinero_bruto = abs(total_amount_neto)
+                            # Preparar valores usando la limpieza robusta
+                            total_dinero_bruto = limpiar_numero_eu(row.get('Total_Dinero', 0))
+                            precio_unitario = limpiar_numero_eu(row.get('Precio', 0))
+                            comision_val = limpiar_numero_eu(row.get('Comision', 0))
                             
-                            # Caso B: Formato Manual (Total_Dinero + Precio + Comision)
-                            else:
-                                total_dinero_bruto = limpiar_numero_eu(row.get('Total_Dinero', 0))
-                                precio_unitario = limpiar_numero_eu(row.get('Precio', 0))
-                                comision_calc = limpiar_numero_eu(row.get('Comision', 0))
-
-                            # Cambio (FX)
+                            # Preparar Ticker y Tipo
+                            ticker_val = str(row.get('Ticker')).upper().strip()
+                            tipo_val = str(row.get('Tipo')).capitalize()
+                            
+                            # Cambio
                             fx_val = 1.0
-                            if 'Cambio' in cols: fx_val = limpiar_numero_eu(row['Cambio'])
-                            elif 'FX Rate' in cols: fx_val = limpiar_numero_eu(row['FX Rate'])
+                            if 'Cambio' in row: fx_val = limpiar_numero_eu(row['Cambio'])
+                            elif 'FX Rate' in row: fx_val = limpiar_numero_eu(row['FX Rate'])
                             elif mon != "EUR":
                                 fx_val = get_historical_eur_rate(dt_obj, mon)
                             
                             record = {
                                 "Usuario": st.session_state.current_user,
                                 "Fecha": dt_obj.strftime("%Y/%m/%d %H:%M"),
-                                "Ticker": ticker,
-                                "Tipo": tipo,
-                                "Cantidad": total_dinero_bruto, 
+                                "Ticker": ticker_val,
+                                "Tipo": tipo_val,
+                                "Cantidad": total_dinero_bruto,
                                 "Precio": precio_unitario,
-                                "Comision": comision_calc,
+                                "Comision": comision_val,
                                 "Moneda": mon,
                                 "Cambio": fx_val,
-                                "Descripcion": "Importado Broker"
+                                "Descripcion": "Importado CSV (Opción A)"
                             }
-                            
-                            # Intentar obtener nombre
                             try:
                                 n, _, _ = get_stock_data_yahoo(record['Ticker'])
                                 if n: record['Descripcion'] = n
@@ -1156,4 +1121,3 @@ else:
         cols_display = ['Fecha_str', 'Ticker', 'Tipo', 'Cantidad', 'Precio', 'Moneda', 'Comision', 'Cambio']
         df_sorted_main = df.sort_values(by='Fecha_dt', ascending=False)
         st.dataframe(df_sorted_main[cols_display], use_container_width=True, hide_index=True)
-
