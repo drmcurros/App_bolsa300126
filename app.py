@@ -602,11 +602,9 @@ with st.sidebar:
                         """Convierte formato 1.234,56 (EU) a 1234.56 (Python)"""
                         if pd.isna(valor) or str(valor).strip() == '': return 0.0
                         s = str(valor).strip()
-                        # Si detectamos formato europeo (puntos como miles y coma como decimal)
-                        # O simplemente comas como decimal
                         if ',' in s:
-                            s = s.replace('.', '')  # Eliminar puntos de miles
-                            s = s.replace(',', '.') # Cambiar coma por punto decimal
+                            s = s.replace('.', '')  
+                            s = s.replace(',', '.') 
                         return float(s)
                     # ------------------------------------------------
                     
@@ -796,6 +794,13 @@ if st.session_state.ticker_detalle:
         valor_mercado_eur = acc * now * fx_actual
         if info.get('coste_total_eur') > 0: rent = (valor_mercado_eur - info.get('coste_total_eur', 0)) / info.get('coste_total_eur')
 
+    # --- NUEVO: CÁLCULO BREAK-EVEN ---
+    break_even_orig = 0.0
+    if acc > 0 and fx_actual > 0:
+        # pmc está en EUR. Lo convertimos a moneda origen con el FX actual.
+        break_even_orig = info.get('pmc', 0) / fx_actual
+    # ---------------------------------
+
     st.markdown("""
     <style>
     .metric-container { text-align: left; padding: 5px 0; }
@@ -807,18 +812,20 @@ if st.session_state.ticker_detalle:
     </style>
     """, unsafe_allow_html=True)
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5) # Cambiado a 5 columnas
     with m1:
         mon_symbol = "€" if info.get("moneda_origen") == "EUR" else info.get("moneda_origen","")
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Precio</div><div class="metric-value">{fmt_dinamico(now, mon_symbol, 2)}</div></div>', unsafe_allow_html=True)
-    with m2:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">Acciones</div><div class="metric-value">{fmt_dinamico(acc)}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-container"><div class="metric-label">Precio Actual</div><div class="metric-value">{fmt_dinamico(now, mon_symbol, 2)}</div></div>', unsafe_allow_html=True)
+    with m2: # COLUMNA BREAK-EVEN
+        st.markdown(f'<div class="metric-container"><div class="metric-label" title="Precio mínimo de venta en {mon_symbol} para no perder dinero (Cubre coste compras y tipo de cambio actual. No incluye comisión de venta futura)">Break-Even</div><div class="metric-value">{fmt_dinamico(break_even_orig, mon_symbol, 2)}</div></div>', unsafe_allow_html=True)
     with m3:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">Acciones</div><div class="metric-value">{fmt_dinamico(acc)}</div></div>', unsafe_allow_html=True)
+    with m4:
         rent_pct = rent * 100
         delta_class = "delta-pos" if rent >= 0 else "delta-neg"
         symbol = "↑" if rent >= 0 else "↓"
         st.markdown(f'<div class="metric-container"><div class="metric-label">Valor Actual</div><div class="metric-value">{fmt_dinamico(valor_mercado_eur, "€")}</div><div class="metric-delta-box {delta_class}">{symbol} {fmt_num_es(rent_pct)}%</div></div>', unsafe_allow_html=True)
-    with m4:
+    with m5:
         trad = info.get('pnl_cerrado', 0)
         st.markdown(f'<div class="metric-container"><div class="metric-label">Trading (Cerrado)</div><div class="metric-value">{fmt_dinamico(trad, "€")}</div></div>', unsafe_allow_html=True)
 
